@@ -4,6 +4,7 @@ import io.papermc.fill.model.BuildChannel
 plugins {
     application
     id("flashbyte-init-manifest")
+    id("flashbyte-publish")
     alias(libs.plugins.shadow)
     alias(libs.plugins.fill)
 }

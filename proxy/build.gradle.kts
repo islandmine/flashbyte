@@ -3,7 +3,7 @@ import io.papermc.fill.model.BuildChannel
 
 plugins {
     application
-    id("velocity-init-manifest")
+    id("flashbyte-init-manifest")
     alias(libs.plugins.shadow)
     alias(libs.plugins.fill)
 }
@@ -20,8 +20,8 @@ tasks {
 
     jar {
         manifest {
-            attributes["Implementation-Title"] = "Velocity"
-            attributes["Implementation-Vendor"] = "Velocity Contributors"
+            attributes["Implementation-Title"] = "Flashbyte"
+            attributes["Implementation-Vendor"] = "Flashbyte Contributors"
             attributes["Multi-Release"] = "true"
         }
     }
@@ -116,7 +116,7 @@ tasks {
 
 val projectVersion = version as String
 fill {
-    project("velocity")
+    project("flashbyte")
 
     build {
         channel = BuildChannel.STABLE
@@ -133,8 +133,8 @@ fill {
 }
 
 dependencies {
-    implementation(project(":velocity-api"))
-    implementation(project(":velocity-native"))
+    implementation(project(":flashbyte-api"))
+    implementation(project(":flashbyte-native"))
 
     implementation(libs.bundles.log4j)
     implementation(libs.kyori.ansi)

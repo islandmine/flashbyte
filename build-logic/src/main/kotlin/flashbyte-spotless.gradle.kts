@@ -5,7 +5,7 @@ apply<SpotlessPlugin>()
 
 extensions.configure<SpotlessExtension> {
     java {
-        if (project.name == "velocity-api") {
+        if (project.name == "flashbyte-api") {
             licenseHeaderFile(file("HEADER.txt"))
             targetExclude("**/java/com/velocitypowered/api/util/Ordered.java")
         } else {

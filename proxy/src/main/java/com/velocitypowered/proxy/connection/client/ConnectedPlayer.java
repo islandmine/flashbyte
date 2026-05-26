@@ -204,6 +204,8 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
   private volatile ChatQueue chatQueue;
   private final ChatBuilderFactory chatBuilderFactory;
   private final BossBarManager bossBarManager;
+  private int clientEntityId = -1;
+  private int serverEntityId = -1;
 
   ConnectedPlayer(VelocityServer server, GameProfile profile, MinecraftConnection connection,
                   @Nullable InetSocketAddress virtualHost, @Nullable String rawVirtualHost, boolean onlineMode,
@@ -240,6 +242,22 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
     for (final VelocityBossBarImplementation bar : this.bossBars) {
       bar.viewerDisconnected(this);
     }
+  }
+
+  public int getClientEntityId() {
+    return clientEntityId;
+  }
+
+  public void setClientEntityId(int clientEntityId) {
+    this.clientEntityId = clientEntityId;
+  }
+
+  public int getServerEntityId() {
+    return serverEntityId;
+  }
+
+  public void setServerEntityId(int serverEntityId) {
+    this.serverEntityId = serverEntityId;
   }
 
   public ChatBuilderFactory getChatBuilderFactory() {

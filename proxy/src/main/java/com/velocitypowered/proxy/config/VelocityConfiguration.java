@@ -935,7 +935,7 @@ public class VelocityConfiguration implements ProxyConfig {
     @Expose
     private int queryPort = 25565;
     @Expose
-    private String queryMap = "Velocity";
+    private String queryMap = "Flashbyte";
     @Expose
     private boolean showPlugins = false;
 
@@ -953,7 +953,7 @@ public class VelocityConfiguration implements ProxyConfig {
       if (config != null) {
         this.queryEnabled = config.getOrElse("enabled", false);
         this.queryPort = config.getIntOrElse("port", 25565);
-        this.queryMap = config.getOrElse("map", "Velocity");
+        this.queryMap = config.getOrElse("map", "Flashbyte");
         this.showPlugins = config.getOrElse("show-plugins", false);
       }
     }

@@ -21,7 +21,7 @@ val currentShortRevision = ByteArrayOutputStream().use {
 tasks.withType<Jar> {
     manifest {
         val buildNumber = System.getenv("BUILD_NUMBER")
-        val velocityHumanVersion: String =
+        val flashbyteHumanVersion: String =
             if (project.version.toString().endsWith("-SNAPSHOT")) {
                 if (buildNumber == null) {
                     "${project.version} (git-$currentShortRevision)"
@@ -31,6 +31,6 @@ tasks.withType<Jar> {
             } else {
                 archiveVersion.get()
             }
-        attributes["Implementation-Version"] = velocityHumanVersion
+        attributes["Implementation-Version"] = flashbyteHumanVersion
     }
 }

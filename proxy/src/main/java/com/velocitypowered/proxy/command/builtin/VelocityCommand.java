@@ -172,10 +172,10 @@ public final class VelocityCommand {
       source.sendMessage(velocity);
       source.sendMessage(copyright);
 
-      if (version.getName().equals("Velocity")) {
+      if (version.getName().equals("Flashbyte")) {
         final TextComponent embellishment = Component.text()
             .append(Component.text()
-                .content("PaperMC")
+                .content("Flashbyte")
                 .color(NamedTextColor.GREEN)
                 .clickEvent(ClickEvent.openUrl(VelocityServer.VELOCITY_URL))
                 .build())
@@ -185,7 +185,7 @@ public final class VelocityCommand {
                 .color(NamedTextColor.GREEN)
                 .decoration(TextDecoration.UNDERLINED, true)
                 .clickEvent(ClickEvent.openUrl(
-                    "https://github.com/PaperMC/Velocity"))
+                    VelocityServer.VELOCITY_URL))
                 .build())
             .build();
         source.sendMessage(embellishment);

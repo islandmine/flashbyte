@@ -119,7 +119,7 @@ import org.checkerframework.checker.nullness.qual.Nullable;
  */
 public class VelocityServer implements ProxyServer, ForwardingAudience {
 
-  public static final String VELOCITY_URL = "https://papermc.io/software/velocity";
+  public static final String VELOCITY_URL = "https://github.com/flashbyte";
 
   private static final Logger logger = LogManager.getLogger(VelocityServer.class);
   public static final Gson GENERAL_GSON = new GsonBuilder()
@@ -202,13 +202,13 @@ public class VelocityServer implements ProxyServer, ForwardingAudience {
     String implVersion;
     String implVendor;
     if (pkg != null) {
-      implName = MoreObjects.firstNonNull(pkg.getImplementationTitle(), "Velocity");
+      implName = MoreObjects.firstNonNull(pkg.getImplementationTitle(), "Flashbyte");
       implVersion = MoreObjects.firstNonNull(pkg.getImplementationVersion(), "<unknown>");
-      implVendor = MoreObjects.firstNonNull(pkg.getImplementationVendor(), "Velocity Contributors");
+      implVendor = MoreObjects.firstNonNull(pkg.getImplementationVendor(), "Flashbyte Contributors");
     } else {
-      implName = "Velocity";
+      implName = "Flashbyte";
       implVersion = "<unknown>";
-      implVendor = "Velocity Contributors";
+      implVendor = "Flashbyte Contributors";
     }
 
     return new ProxyVersion(implName, implVendor, implVersion);
@@ -217,8 +217,8 @@ public class VelocityServer implements ProxyServer, ForwardingAudience {
   private VelocityPluginContainer createVirtualPlugin() {
     ProxyVersion version = getVersion();
     PluginDescription description = new VelocityPluginDescription(
-        "velocity", version.getName(), version.getVersion(), "The Velocity proxy",
-            version.getName().equals("Velocity") ? VELOCITY_URL : null,
+        "flashbyte", version.getName(), version.getVersion(), "The Flashbyte proxy",
+            version.getName().equals("Flashbyte") ? VELOCITY_URL : null,
             ImmutableList.of(version.getVendor()), Collections.emptyList(), null);
     VelocityPluginContainer container = new VelocityPluginContainer(description);
     container.setInstance(VelocityVirtualPlugin.INSTANCE);

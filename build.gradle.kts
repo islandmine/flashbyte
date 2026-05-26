@@ -1,14 +1,14 @@
 plugins {
     `java-library`
-    id("velocity-checkstyle") apply false
-    id("velocity-spotless") apply false
+    id("flashbyte-checkstyle") apply false
+    id("flashbyte-spotless") apply false
 }
 
 subprojects {
     apply<JavaLibraryPlugin>()
 
-    apply(plugin = "velocity-checkstyle")
-    apply(plugin = "velocity-spotless")
+    apply(plugin = "flashbyte-checkstyle")
+    apply(plugin = "flashbyte-spotless")
 
     java {
         toolchain {

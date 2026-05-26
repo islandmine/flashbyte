@@ -145,6 +145,14 @@ public class RespawnPacket implements MinecraftPacket {
     this.portalCooldown = portalCooldown;
   }
 
+  public DimensionInfo getDimensionInfo() {
+    return dimensionInfo;
+  }
+
+  public void setDimensionInfo(DimensionInfo dimensionInfo) {
+    this.dimensionInfo = dimensionInfo;
+  }
+
   public int getSeaLevel() {
     return seaLevel;
   }

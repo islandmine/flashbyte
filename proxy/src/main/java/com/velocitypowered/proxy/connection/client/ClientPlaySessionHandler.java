@@ -34,6 +34,7 @@ import com.velocitypowered.proxy.VelocityServer;
 import com.velocitypowered.proxy.connection.ConnectionTypes;
 import com.velocitypowered.proxy.connection.MinecraftConnection;
 import com.velocitypowered.proxy.connection.MinecraftSessionHandler;
+import com.velocitypowered.proxy.connection.registry.DimensionInfo;
 import com.velocitypowered.proxy.connection.backend.BackendConnectionPhases;
 import com.velocitypowered.proxy.connection.backend.BungeeCordMessageResponder;
 import com.velocitypowered.proxy.connection.backend.VelocityServerConnection;
@@ -634,16 +635,20 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       player.getConnection().delayedWrite(joinGame);
       // Required for Legacy Forge
       player.getPhase().onFirstJoin(player);
+      // Track the initial entity ID
+      player.setClientEntityId(joinGame.getEntityId());
+      player.setServerEntityId(joinGame.getEntityId());
     } else {
       // Clear tab list to avoid duplicate entries
       player.getTabList().clearAll();
 
-      // The player is switching from a server already, so we need to tell the client to change
-      // entity IDs and send new dimension information.
+      // Track the new server's entity ID for rewriting
+      player.setServerEntityId(joinGame.getEntityId());
+
       if (player.getConnection().getType() == ConnectionTypes.LEGACY_FORGE) {
         this.doSafeClientServerSwitch(joinGame);
       } else {
-        this.doFastClientServerSwitch(joinGame);
+        this.doSeamlessServerSwitch(joinGame);
       }
     }
 
@@ -695,21 +700,63 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     destination.completeJoin();
   }
 
+  private void doSeamlessServerSwitch(JoinGamePacket joinGame) {
+    // Seamless server switching: send only Respawn packets instead of JoinGame.
+    // The client interprets Respawn as a world reload rather than a new server join,
+    // which avoids the "Loading terrain..." screen entirely.
+
+    if (player.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_16)) {
+      // Pre-1.16 clients don't support the seamless approach well due to limited
+      // dimension handling. Fall back to the original JoinGame-based switch.
+      doFastClientServerSwitch(joinGame);
+      return;
+    }
+
+    final ProtocolVersion version = player.getProtocolVersion();
+
+    // Step 1: Send a Respawn to a temporary different dimension to force chunk unload.
+    final RespawnPacket tempRespawn = RespawnPacket.fromJoinGame(joinGame);
+    final DimensionInfo targetDimInfo = joinGame.getDimensionInfo();
+    String fakeDimKey;
+    if (targetDimInfo != null && targetDimInfo.getRegistryIdentifier() != null
+        && !targetDimInfo.getRegistryIdentifier().isEmpty()) {
+      fakeDimKey = targetDimInfo.getRegistryIdentifier().contains("overworld")
+          ? "minecraft:the_end" : "minecraft:overworld";
+    } else {
+      fakeDimKey = "minecraft:the_end";
+    }
+
+    if (version.noLessThan(ProtocolVersion.MINECRAFT_1_20_5)) {
+      tempRespawn.setDimension(joinGame.getDimension() == 0 ? 1 : 0);
+    }
+    tempRespawn.setDimensionInfo(new DimensionInfo(
+        fakeDimKey,
+        targetDimInfo != null ? targetDimInfo.getLevelName() : null,
+        targetDimInfo != null && targetDimInfo.isFlat(),
+        targetDimInfo != null && targetDimInfo.isDebugType(),
+        version
+    ));
+    tempRespawn.setDataToKeep((byte) 0);
+    player.getConnection().delayedWrite(tempRespawn);
+
+    // Step 2: Send Respawn to the correct target dimension with data preservation.
+    // This triggers the client to load new chunks seamlessly.
+    final RespawnPacket correctRespawn = RespawnPacket.fromJoinGame(joinGame);
+    if (version.noLessThan(ProtocolVersion.MINECRAFT_1_20_2)) {
+      correctRespawn.setDataToKeep((byte) 0x03);
+    } else if (version.noLessThan(ProtocolVersion.MINECRAFT_1_19_3)) {
+      correctRespawn.setDataToKeep((byte) 0x01);
+    } else {
+      correctRespawn.setDataToKeep((byte) 1);
+    }
+    player.getConnection().delayedWrite(correctRespawn);
+  }
+
   private void doFastClientServerSwitch(JoinGamePacket joinGame) {
-    // In order to handle switching to another server, you will need to send two packets:
-    //
-    // - The join game packet from the backend server, with a different dimension
-    // - A respawn with the correct dimension
-    //
-    // Most notably, by having the client accept the join game packet, we can work around the need
-    // to perform entity ID rewrites, eliminating potential issues from rewriting packets and
-    // improving compatibility with mods.
+    // Legacy fallback for pre-1.16 clients: uses JoinGame which shows loading screen.
     final RespawnPacket respawn = RespawnPacket.fromJoinGame(joinGame);
 
     if (player.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_16)) {
-      // Before Minecraft 1.16, we could not switch to the same dimension without sending an
-      // additional respawn. On older versions of Minecraft this forces the client to perform
-      // garbage collection which adds additional latency.
       joinGame.setDimension(joinGame.getDimension() == 0 ? -1 : 0);
     }
     player.getConnection().delayedWrite(joinGame);
@@ -717,19 +764,13 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   }
 
   private void doSafeClientServerSwitch(JoinGamePacket joinGame) {
-    // Some clients do not behave well with the "fast" respawn sequence. In this case we will use
-    // a "safe" respawn sequence that involves sending three packets to the client. They have the
-    // same effect but tend to work better with buggier clients (Forge 1.8 in particular).
-
-    // Send the JoinGame packet itself, unmodified.
+    // Safe switch for Legacy Forge clients: uses JoinGame (shows loading screen).
     player.getConnection().delayedWrite(joinGame);
 
-    // Send a respawn packet in a different dimension.
     final RespawnPacket fakeSwitchPacket = RespawnPacket.fromJoinGame(joinGame);
     fakeSwitchPacket.setDimension(joinGame.getDimension() == 0 ? -1 : 0);
     player.getConnection().delayedWrite(fakeSwitchPacket);
 
-    // Now send a respawn packet in the correct dimension.
     final RespawnPacket correctSwitchPacket = RespawnPacket.fromJoinGame(joinGame);
     player.getConnection().delayedWrite(correctSwitchPacket);
   }

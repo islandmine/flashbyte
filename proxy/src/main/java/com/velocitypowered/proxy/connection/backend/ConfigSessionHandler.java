@@ -54,6 +54,7 @@ import com.velocitypowered.proxy.protocol.packet.config.ClientboundCustomReportD
 import com.velocitypowered.proxy.protocol.packet.config.ClientboundServerLinksPacket;
 import com.velocitypowered.proxy.protocol.packet.config.CodeOfConductPacket;
 import com.velocitypowered.proxy.protocol.packet.config.FinishedUpdatePacket;
+import com.velocitypowered.proxy.protocol.packet.config.KnownPacksPacket;
 import com.velocitypowered.proxy.protocol.packet.config.RegistrySyncPacket;
 import com.velocitypowered.proxy.protocol.packet.config.StartUpdatePacket;
 import com.velocitypowered.proxy.protocol.packet.config.TagsUpdatePacket;
@@ -150,8 +151,14 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
 
   @Override
   public boolean handle(KeepAlivePacket packet) {
-    serverConn.getPendingPings().put(packet.getRandomId(), System.nanoTime());
-    serverConn.getPlayer().getConnection().write(packet);
+    if (isClientInConfigState()) {
+      serverConn.getPendingPings().put(packet.getRandomId(), System.nanoTime());
+      serverConn.getPlayer().getConnection().write(packet);
+    } else {
+      // Seamless mode: the client is in play state and won't answer a config-state
+      // keepalive. Echo it straight back to the backend to keep the connection alive.
+      serverConn.ensureConnected().write(packet);
+    }
     return true;
   }
 
@@ -329,6 +336,21 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
   public boolean handle(RegistrySyncPacket packet) {
     if (isClientInConfigState()) {
       serverConn.getPlayer().getConnection().write(packet.retain());
+    }
+    return true;
+  }
+
+  @Override
+  public boolean handle(KnownPacksPacket packet) {
+    if (isClientInConfigState()) {
+      // Normal flow: forward the known packs request to the client, which responds.
+      serverConn.getPlayer().getConnection().write(packet);
+    } else {
+      // Seamless mode: the client stays in play state and can't take part in the
+      // known packs exchange. Respond on its behalf by echoing the backend's known
+      // packs back. This matches what a same-version vanilla client would send and
+      // unblocks the backend's config handshake so it proceeds to send JoinGame.
+      serverConn.ensureConnected().write(packet);
     }
     return true;
   }

@@ -39,7 +39,6 @@ import com.velocitypowered.proxy.connection.backend.BungeeCordMessageResponder;
 import com.velocitypowered.proxy.connection.backend.VelocityServerConnection;
 import com.velocitypowered.proxy.connection.forge.legacy.LegacyForgeConstants;
 import com.velocitypowered.proxy.connection.player.resourcepack.ResourcePackResponseBundle;
-import com.velocitypowered.proxy.connection.registry.DimensionInfo;
 import com.velocitypowered.proxy.protocol.MinecraftPacket;
 import com.velocitypowered.proxy.protocol.StateRegistry;
 import com.velocitypowered.proxy.protocol.netty.MinecraftDecoder;
@@ -72,7 +71,6 @@ import com.velocitypowered.proxy.protocol.packet.chat.session.SessionPlayerChatP
 import com.velocitypowered.proxy.protocol.packet.chat.session.SessionPlayerCommandPacket;
 import com.velocitypowered.proxy.protocol.packet.config.FinishedUpdatePacket;
 import com.velocitypowered.proxy.protocol.packet.title.GenericTitlePacket;
-import com.velocitypowered.proxy.protocol.util.EntityIdRewrite;
 import com.velocitypowered.proxy.protocol.util.PluginMessageUtil;
 import com.velocitypowered.proxy.util.CharacterUtil;
 import com.velocitypowered.proxy.util.except.QuietRuntimeException;
@@ -115,10 +113,6 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       Integer.getInteger("velocity.max-queued-login-plugin-messages", 1024);
 
   private static final Logger logger = LogManager.getLogger(ClientPlaySessionHandler.class);
-
-  // A fixed entity id handed to the client so seamless server switches never collide with a
-  // backend-assigned entity id (backends assign small, incrementing ids; this is far out of range).
-  private static final int SEAMLESS_CLIENT_ENTITY_ID = 0x40000000;
 
   private final ConnectedPlayer player;
   private boolean spawned = false;
@@ -546,10 +540,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
         && serverConnection.getPhase().consideredComplete()
         && smc.getState() == StateRegistry.PLAY;
     if (stateAllowsForward) {
-      // Seamless switching keeps the client on its original entity id, so rewrite it to the
-      // backend's entity id in serverbound packets that carry it (e.g. sneak/sprint actions).
-      smc.write(EntityIdRewrite.rewriteServerbound(buf, player.getProtocolVersion(),
-          player.getClientEntityId(), player.getServerEntityId()));
+      smc.write(buf.retain());
     }
   }
 
@@ -633,37 +624,30 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   public void handleBackendJoinGame(JoinGamePacket joinGame, VelocityServerConnection destination) {
     final MinecraftConnection serverMc = destination.ensureConnected();
 
-    // Track the backend's real entity id for this player; used for entity id rewriting.
-    player.setServerEntityId(joinGame.getEntityId());
-
     if (!hasJoinedInitially) {
-      // True first join — player has never been on any server yet.
+      // True first join — send JoinGame as-is.
       hasJoinedInitially = true;
       spawned = true;
-      // Give the client a sentinel entity id that no backend will ever assign to a real entity.
-      // We rewrite between this and each backend's real id in all play packets, which makes
-      // seamless (Respawn-based) switching collision-proof: a backend entity can never share the
-      // client's id, so its packets never get mistaken for the player's and vice versa.
-      player.setClientEntityId(SEAMLESS_CLIENT_ENTITY_ID);
-      joinGame.setEntityId(SEAMLESS_CLIENT_ENTITY_ID);
       player.getConnection().delayedWrite(joinGame);
       // Required for Legacy Forge
       player.getPhase().onFirstJoin(player);
     } else {
-      // Server switch — either pre-1.20.2 (spawned=true) or 1.20.2+ config state (spawned=false).
-      // In both cases, use seamless switching to avoid the loading screen.
+      // Server switch. The client stays in play state (we skip the config-state transition that
+      // causes the visible "reconfiguring" screen), and we use the JoinGame + Respawn "fast
+      // switch". By having the client accept the backend's JoinGame, it adopts the backend's
+      // entity id, so no entity-id rewriting is needed and there is no desync — the same approach
+      // LimboAPI and Velocity's pre-1.20.2 switch use.
       spawned = true;
       player.getTabList().clearAll();
 
       if (player.getConnection().getType() == ConnectionTypes.LEGACY_FORGE) {
         this.doSafeClientServerSwitch(joinGame);
       } else {
-        this.doSeamlessServerSwitch(joinGame);
+        this.doFastClientServerSwitch(joinGame);
       }
     }
 
-    // The sound API sends entity sounds to the client, so it must use the client-facing id.
-    destination.setEntityId(player.getClientEntityId());
+    destination.setEntityId(joinGame.getEntityId()); // used for sound api
     if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_2)) {
       player.getBossBarManager().sendBossBars();
     } else {
@@ -711,60 +695,11 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     destination.completeJoin();
   }
 
-  private void doSeamlessServerSwitch(JoinGamePacket joinGame) {
-    // Seamless server switching: send only Respawn packets instead of JoinGame.
-    // The client interprets Respawn as a world reload rather than a new server join,
-    // which avoids the "Loading terrain..." screen entirely.
-
-    if (player.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_16)) {
-      // Pre-1.16 clients don't support the seamless approach well due to limited
-      // dimension handling. Fall back to the original JoinGame-based switch.
-      doFastClientServerSwitch(joinGame);
-      return;
-    }
-
-    final ProtocolVersion version = player.getProtocolVersion();
-
-    // Step 1: Send a Respawn to a temporary different dimension to force chunk unload.
-    final RespawnPacket tempRespawn = RespawnPacket.fromJoinGame(joinGame);
-    final DimensionInfo targetDimInfo = joinGame.getDimensionInfo();
-    String fakeDimKey;
-    if (targetDimInfo != null && targetDimInfo.getRegistryIdentifier() != null
-        && !targetDimInfo.getRegistryIdentifier().isEmpty()) {
-      fakeDimKey = targetDimInfo.getRegistryIdentifier().contains("overworld")
-          ? "minecraft:the_end" : "minecraft:overworld";
-    } else {
-      fakeDimKey = "minecraft:the_end";
-    }
-
-    if (version.noLessThan(ProtocolVersion.MINECRAFT_1_20_5)) {
-      tempRespawn.setDimension(joinGame.getDimension() == 0 ? 1 : 0);
-    }
-    tempRespawn.setDimensionInfo(new DimensionInfo(
-        fakeDimKey,
-        targetDimInfo != null ? targetDimInfo.getLevelName() : null,
-        targetDimInfo != null && targetDimInfo.isFlat(),
-        targetDimInfo != null && targetDimInfo.isDebugType(),
-        version
-    ));
-    tempRespawn.setDataToKeep((byte) 0);
-    player.getConnection().delayedWrite(tempRespawn);
-
-    // Step 2: Send Respawn to the correct target dimension with data preservation.
-    // This triggers the client to load new chunks seamlessly.
-    final RespawnPacket correctRespawn = RespawnPacket.fromJoinGame(joinGame);
-    if (version.noLessThan(ProtocolVersion.MINECRAFT_1_20_2)) {
-      correctRespawn.setDataToKeep((byte) 0x03);
-    } else if (version.noLessThan(ProtocolVersion.MINECRAFT_1_19_3)) {
-      correctRespawn.setDataToKeep((byte) 0x01);
-    } else {
-      correctRespawn.setDataToKeep((byte) 1);
-    }
-    player.getConnection().delayedWrite(correctRespawn);
-  }
-
   private void doFastClientServerSwitch(JoinGamePacket joinGame) {
-    // Legacy fallback for pre-1.16 clients: uses JoinGame which shows loading screen.
+    // Send the backend's JoinGame followed by a Respawn in the correct dimension. The client
+    // adopts the backend's entity id from the JoinGame (so no entity-id rewriting is needed), and
+    // since we stay in play state there is no config-state screen — only a brief client-side
+    // terrain refresh, like a dimension change.
     final RespawnPacket respawn = RespawnPacket.fromJoinGame(joinGame);
 
     if (player.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_16)) {
@@ -775,7 +710,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   }
 
   private void doSafeClientServerSwitch(JoinGamePacket joinGame) {
-    // Safe switch for Legacy Forge clients: uses JoinGame (shows loading screen).
+    // Safe switch for Legacy Forge clients.
     player.getConnection().delayedWrite(joinGame);
 
     final RespawnPacket fakeSwitchPacket = RespawnPacket.fromJoinGame(joinGame);

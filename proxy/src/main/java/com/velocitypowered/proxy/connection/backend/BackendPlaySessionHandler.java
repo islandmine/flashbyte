@@ -69,7 +69,6 @@ import com.velocitypowered.proxy.protocol.packet.UpsertPlayerInfoPacket;
 import com.velocitypowered.proxy.protocol.packet.chat.ComponentHolder;
 import com.velocitypowered.proxy.protocol.packet.config.StartUpdatePacket;
 import com.velocitypowered.proxy.protocol.util.DeferredByteBufHolder;
-import com.velocitypowered.proxy.protocol.util.EntityIdRewrite;
 import com.velocitypowered.proxy.protocol.util.PluginMessageUtil;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufUtil;
@@ -468,13 +467,8 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void handleUnknown(ByteBuf buf) {
-    final ConnectedPlayer player = serverConn.getPlayer();
-    // Seamless switching keeps the client on its original entity id, so rewrite the backend's
-    // entity id back to the client's in every play packet that carries it.
-    final ByteBuf out = EntityIdRewrite.rewriteClientbound(buf, player.getProtocolVersion(),
-        player.getServerEntityId(), player.getClientEntityId());
-    boolean huge = out.readableBytes() > LARGE_PACKET_THRESHOLD;
-    playerConnection.delayedWrite(out);
+    boolean huge = buf.readableBytes() > LARGE_PACKET_THRESHOLD;
+    playerConnection.delayedWrite(buf.retain());
     if (huge || ++packetsFlushed >= MAXIMUM_PACKETS_TO_FLUSH) {
       playerConnection.flush();
       packetsFlushed = 0;

@@ -117,6 +117,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   private final ConnectedPlayer player;
   private boolean spawned = false;
+  private boolean hasJoinedInitially = false;
   private final List<UUID> serverBossBars = new ArrayList<>();
   private final Queue<PluginMessagePacket> loginPluginMessages = new ConcurrentLinkedQueue<>();
   private final AtomicLong loginPluginMessagesBytes = new AtomicLong();
@@ -628,9 +629,9 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   public void handleBackendJoinGame(JoinGamePacket joinGame, VelocityServerConnection destination) {
     final MinecraftConnection serverMc = destination.ensureConnected();
 
-    if (!spawned) {
-      // The player wasn't spawned in yet, so we don't need to do anything special. Just send
-      // JoinGame.
+    if (!hasJoinedInitially) {
+      // True first join — player has never been on any server yet. Send JoinGame directly.
+      hasJoinedInitially = true;
       spawned = true;
       player.getConnection().delayedWrite(joinGame);
       // Required for Legacy Forge
@@ -639,7 +640,9 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       player.setClientEntityId(joinGame.getEntityId());
       player.setServerEntityId(joinGame.getEntityId());
     } else {
-      // Clear tab list to avoid duplicate entries
+      // Server switch — either pre-1.20.2 (spawned=true) or 1.20.2+ config state (spawned=false).
+      // In both cases, use seamless switching to avoid the loading screen.
+      spawned = true;
       player.getTabList().clearAll();
 
       // Track the new server's entity ID for rewriting

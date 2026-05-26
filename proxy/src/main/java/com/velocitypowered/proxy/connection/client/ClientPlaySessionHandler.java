@@ -596,15 +596,10 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     final VelocityServerConnection existingConnection = player.getConnectedServer();
 
     if (existingConnection != null) {
-      // Shut down the existing server connection.
       player.setConnectedServer(null);
       existingConnection.disconnect();
-
-      // Send keep alive to try to avoid timeouts
       player.sendKeepAlive();
 
-      // Config state clears everything in the client. No need to clear later.
-      spawned = false;
       player.clearPlayerListHeaderAndFooterSilent();
       player.getTabList().clearAllSilent();
       if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_2)) {
@@ -614,9 +609,10 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       }
     }
 
-    player.switchToConfigState();
-
-    return configSwitchFuture;
+    // Stay in play state for seamless server switching.
+    // The backend goes through its config state independently.
+    // The client never leaves play state, so there's no config/loading screen.
+    return CompletableFuture.completedFuture(null);
   }
 
   /**

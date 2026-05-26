@@ -116,6 +116,10 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   private static final Logger logger = LogManager.getLogger(ClientPlaySessionHandler.class);
 
+  // A fixed entity id handed to the client so seamless server switches never collide with a
+  // backend-assigned entity id (backends assign small, incrementing ids; this is far out of range).
+  private static final int SEAMLESS_CLIENT_ENTITY_ID = 0x40000000;
+
   private final ConnectedPlayer player;
   private boolean spawned = false;
   private boolean hasJoinedInitially = false;
@@ -629,24 +633,27 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   public void handleBackendJoinGame(JoinGamePacket joinGame, VelocityServerConnection destination) {
     final MinecraftConnection serverMc = destination.ensureConnected();
 
+    // Track the backend's real entity id for this player; used for entity id rewriting.
+    player.setServerEntityId(joinGame.getEntityId());
+
     if (!hasJoinedInitially) {
-      // True first join — player has never been on any server yet. Send JoinGame directly.
+      // True first join — player has never been on any server yet.
       hasJoinedInitially = true;
       spawned = true;
+      // Give the client a sentinel entity id that no backend will ever assign to a real entity.
+      // We rewrite between this and each backend's real id in all play packets, which makes
+      // seamless (Respawn-based) switching collision-proof: a backend entity can never share the
+      // client's id, so its packets never get mistaken for the player's and vice versa.
+      player.setClientEntityId(SEAMLESS_CLIENT_ENTITY_ID);
+      joinGame.setEntityId(SEAMLESS_CLIENT_ENTITY_ID);
       player.getConnection().delayedWrite(joinGame);
       // Required for Legacy Forge
       player.getPhase().onFirstJoin(player);
-      // Track the initial entity ID
-      player.setClientEntityId(joinGame.getEntityId());
-      player.setServerEntityId(joinGame.getEntityId());
     } else {
       // Server switch — either pre-1.20.2 (spawned=true) or 1.20.2+ config state (spawned=false).
       // In both cases, use seamless switching to avoid the loading screen.
       spawned = true;
       player.getTabList().clearAll();
-
-      // Track the new server's entity ID for rewriting
-      player.setServerEntityId(joinGame.getEntityId());
 
       if (player.getConnection().getType() == ConnectionTypes.LEGACY_FORGE) {
         this.doSafeClientServerSwitch(joinGame);
@@ -655,7 +662,8 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       }
     }
 
-    destination.setEntityId(joinGame.getEntityId()); // used for sound api
+    // The sound API sends entity sounds to the client, so it must use the client-facing id.
+    destination.setEntityId(player.getClientEntityId());
     if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_2)) {
       player.getBossBarManager().sendBossBars();
     } else {

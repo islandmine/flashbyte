@@ -68,6 +68,7 @@ import com.velocitypowered.proxy.protocol.packet.DialogShowPacket;
 import com.velocitypowered.proxy.protocol.packet.DisconnectPacket;
 import com.velocitypowered.proxy.protocol.packet.EncryptionRequestPacket;
 import com.velocitypowered.proxy.protocol.packet.EncryptionResponsePacket;
+import com.velocitypowered.proxy.protocol.packet.GameEventPacket;
 import com.velocitypowered.proxy.protocol.packet.HandshakePacket;
 import com.velocitypowered.proxy.protocol.packet.HeaderAndFooterPacket;
 import com.velocitypowered.proxy.protocol.packet.JoinGamePacket;
@@ -587,6 +588,18 @@ public enum StateRegistry {
           map(0x4B, MINECRAFT_1_21_5, true),
           map(0x50, MINECRAFT_1_21_9, true),
           map(0x52, MINECRAFT_26_1, true));
+      clientbound.register(
+          GameEventPacket.class,
+          GameEventPacket::new,
+          // Encode-only: the proxy sends this (event 13 during a seamless switch) but backend game
+          // events keep passing through as raw packets. Ids are non-monotonic across versions, so
+          // only the breakpoints where the id changes are listed; the last entry covers up to the
+          // newest supported version (1.21.9+ and 26.1 share 0x26).
+          map(0x20, MINECRAFT_1_20_3, true),
+          map(0x22, MINECRAFT_1_20_5, true),
+          map(0x23, MINECRAFT_1_21_2, true),
+          map(0x22, MINECRAFT_1_21_5, true),
+          map(0x26, MINECRAFT_1_21_9, true));
       clientbound.register(
           RemoveResourcePackPacket.class,
           RemoveResourcePackPacket::new,

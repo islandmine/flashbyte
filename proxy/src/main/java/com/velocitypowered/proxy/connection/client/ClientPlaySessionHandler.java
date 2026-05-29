@@ -44,6 +44,7 @@ import com.velocitypowered.proxy.protocol.StateRegistry;
 import com.velocitypowered.proxy.protocol.netty.MinecraftDecoder;
 import com.velocitypowered.proxy.protocol.packet.BossBarPacket;
 import com.velocitypowered.proxy.protocol.packet.ClientSettingsPacket;
+import com.velocitypowered.proxy.protocol.packet.GameEventPacket;
 import com.velocitypowered.proxy.protocol.packet.JoinGamePacket;
 import com.velocitypowered.proxy.protocol.packet.KeepAlivePacket;
 import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
@@ -756,8 +757,8 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   private void doFastClientServerSwitch(JoinGamePacket joinGame) {
     // Send the backend's JoinGame followed by a Respawn in the correct dimension. The client
     // adopts the backend's entity id from the JoinGame (so no entity-id rewriting is needed), and
-    // since we stay in play state there is no config-state screen — only a brief client-side
-    // terrain refresh, like a dimension change.
+    // since we stay in play state there is no config-state screen — the world reloads like a
+    // dimension change.
     final RespawnPacket respawn = RespawnPacket.fromJoinGame(joinGame);
 
     if (player.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_16)) {
@@ -765,6 +766,14 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     }
     player.getConnection().delayedWrite(joinGame);
     player.getConnection().delayedWrite(respawn);
+
+    // On 1.20.3+ the client otherwise sits on the "Loading terrain" screen after a JoinGame/Respawn
+    // until it receives game event 13 ("start waiting for level chunks") — or a ~30s timeout. Send
+    // it right away so the new world's chunks stream straight in instead of holding on the screen.
+    if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_3)) {
+      player.getConnection().delayedWrite(
+          new GameEventPacket(GameEventPacket.START_WAITING_FOR_LEVEL_CHUNKS, 0f));
+    }
   }
 
   private void doSafeClientServerSwitch(JoinGamePacket joinGame) {

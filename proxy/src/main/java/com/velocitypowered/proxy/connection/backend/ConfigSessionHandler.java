@@ -85,12 +85,18 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
 
   private ResourcePackInfo resourcePackToApply;
 
-  // Accumulates a fingerprint of this server's configuration-state registry data (the known packs
-  // it advertises plus every registry-sync payload it sends). Two servers that produce the same
-  // fingerprint hand the client byte-identical registries, which is exactly the condition under
-  // which a seamless (play-state) switch between them is safe — see ClientPlaySessionHandler.
-  private final CRC32 registryHash = new CRC32();
-  private boolean observedRegistryData;
+  // Fingerprints this server's configuration-state registry data so a later switch can tell whether
+  // a seamless (play-state) switch is safe (see ClientPlaySessionHandler). Two separate hashes are
+  // kept because the fingerprint MUST be mode-independent: the same server is contacted differently
+  // depending on whether the client is in config (real known-packs negotiation) or stays in play
+  // (the proxy echoes known-packs, so the backend sends a minimal registry sync). The clientbound
+  // known-packs a server advertises are identical in both modes, so on 1.20.5+ we fingerprint those
+  // and ignore the negotiation-dependent registry-sync payload. On 1.20.2-1.20.4 there is no
+  // known-packs exchange and the full registry sync is always sent, so we fall back to hashing it.
+  private final CRC32 knownPacksHash = new CRC32();
+  private final CRC32 registrySyncHash = new CRC32();
+  private boolean sawKnownPacks;
+  private boolean sawRegistrySync;
 
   private State state;
 
@@ -349,8 +355,10 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
   public boolean handle(RegistrySyncPacket packet) {
     // Fingerprint the registry payload regardless of whether the client is in config state — the
     // seamless switch needs this even when the client stays in play and the data isn't forwarded.
-    registryHash.update(ByteBufUtil.getBytes(packet.content()));
-    observedRegistryData = true;
+    // Only used as a fallback fingerprint on pre-1.20.5 servers (no known-packs exchange); on newer
+    // servers this payload depends on the known-packs negotiation and must not drive the decision.
+    registrySyncHash.update(ByteBufUtil.getBytes(packet.content()));
+    sawRegistrySync = true;
     if (isClientInConfigState()) {
       serverConn.getPlayer().getConnection().write(packet.retain());
     }
@@ -363,11 +371,11 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
     // most registry data when the client claims a matching known pack, so the pack identity itself
     // is part of what determines the client's effective registries.
     for (final KnownPacksPacket.KnownPack pack : packet.getPacks()) {
-      registryHash.update(
+      knownPacksHash.update(
           (pack.namespace() + ':' + pack.id() + ':' + pack.version() + '\n')
               .getBytes(StandardCharsets.UTF_8));
     }
-    observedRegistryData = true;
+    sawKnownPacks = true;
     if (isClientInConfigState()) {
       // Normal flow: forward the known packs request to the client, which responds.
       serverConn.getPlayer().getConnection().write(packet);
@@ -488,12 +496,18 @@ public class ConfigSessionHandler implements MinecraftSessionHandler {
    * registries.
    */
   private void recordRegistryFingerprint() {
-    if (!observedRegistryData) {
-      // Saw no registry/known-pack data; leave the cached fingerprint untouched (treated as
-      // "unknown", which forces a safe reconfigure on the next switch to this server).
+    // Prefer the advertised known packs (mode-independent across seamless/reconfigure switches);
+    // fall back to the full registry sync only on pre-1.20.5 servers that have no known-packs
+    // exchange. If we observed neither, leave the cached fingerprint untouched (treated as
+    // "unknown", which forces a safe reconfigure on the next switch to this server).
+    final Long fingerprint;
+    if (sawKnownPacks) {
+      fingerprint = knownPacksHash.getValue();
+    } else if (sawRegistrySync) {
+      fingerprint = registrySyncHash.getValue();
+    } else {
       return;
     }
-    final Long fingerprint = registryHash.getValue();
     serverConn.getServer().setRegistryFingerprint(fingerprint);
     if (isClientInConfigState()) {
       serverConn.getPlayer().setCurrentRegistryFingerprint(fingerprint);

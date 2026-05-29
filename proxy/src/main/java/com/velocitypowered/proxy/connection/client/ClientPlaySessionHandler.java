@@ -114,6 +114,13 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   private static final Logger logger = LogManager.getLogger(ClientPlaySessionHandler.class);
 
+  // When true, a 1.20.2+ switch to a backend whose registries differ from what the client holds is
+  // routed through a brief config-state reconfigure instead of a seamless play-state switch, to
+  // avoid registry/entity desync. Off by default: every switch stays fully seamless (the world
+  // reloads in place with no screen), which assumes all backends share the same registries.
+  private static final boolean RECONFIGURE_ON_REGISTRY_MISMATCH =
+      Boolean.getBoolean("flashbyte.reconfigure-on-registry-mismatch");
+
   private final ConnectedPlayer player;
   private boolean spawned = false;
   private boolean hasJoinedInitially = false;
@@ -608,20 +615,17 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       }
     }
 
-    // Decide between a fully seamless (play-state) switch and a brief reconfigure.
+    // By default every switch is fully seamless: the client never leaves play state, so the world
+    // just reloads around the player like a dimension change — no reconfigure or loading screen.
     //
-    // On 1.20.2+ the world registries (dimension types, biomes, damage types, entity variants, ...)
-    // are session state delivered ONLY during the configuration state; there is no play-state
-    // packet that can resend them. A play-state JoinGame + Respawn therefore reuses whatever
-    // registries the client already holds, which is only safe when the destination's registries are
-    // identical to the client's current ones. If they differ, dimension indices and entity/variant
-    // references resolve against the wrong registry — desyncing entity positions and physics (e.g.
-    // knockback) and potentially disconnecting the client.
-    //
-    // So: stay in play (seamless, no screen) when we can prove the destination's registries match
-    // what the client holds, and otherwise fall back to the configuration-state switch (a brief
-    // reconfigure) so the client receives the new registries. Pre-1.20.2 has no configuration state
-    // and carries its registries inside JoinGame, so it always uses the seamless fast switch.
+    // The catch (1.20.2+): world registries (dimension types, biomes, damage types, entity
+    // variants, ...) are session state delivered ONLY during the configuration state; there is no
+    // play-state packet that can resend them. A seamless JoinGame + Respawn therefore reuses the
+    // registries the client already holds, which is correct only when every backend shares the same
+    // registries (same version + datapacks). If a backend's registries genuinely differ, a
+    // screenless switch desyncs dimension indices / entity variants. Operators whose backends can
+    // differ can opt into a brief config-state reconfigure for mismatched switches by setting
+    // -Dflashbyte.reconfigure-on-registry-mismatch=true.
     if (needsReconfigureForSwitch()) {
       // Configuration clears the client's world, so the subsequent JoinGame is sent as-is.
       spawned = false;
@@ -637,9 +641,15 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   /**
    * Determines whether the upcoming switch must route the client through the configuration state to
-   * resync registries, or whether a fully seamless play-state switch is safe.
+   * resync registries. Disabled by default (every switch stays fully seamless); enabled only when
+   * {@code -Dflashbyte.reconfigure-on-registry-mismatch=true} is set, for setups whose backends can
+   * have different registries and would otherwise desync on a screenless switch.
    */
   private boolean needsReconfigureForSwitch() {
+    if (!RECONFIGURE_ON_REGISTRY_MISMATCH) {
+      // Always seamless — the world reloads in place with no reconfigure screen.
+      return false;
+    }
     if (player.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_20_2)) {
       // No configuration state; registries travel inside JoinGame. The fast switch is correct.
       return false;

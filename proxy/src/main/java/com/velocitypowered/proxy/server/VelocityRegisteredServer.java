@@ -72,6 +72,11 @@ public class VelocityRegisteredServer implements RegisteredServer, ForwardingAud
   private final @Nullable VelocityServer server;
   private final ServerInfo serverInfo;
   private final Map<UUID, ConnectedPlayer> players = new ConcurrentHashMap<>();
+  // Fingerprint of the configuration-state registry data (known packs + registry sync) this server
+  // last sent. Used to decide whether a seamless (play-state) server switch is safe: it only is
+  // when the destination's registries match the ones the client already holds. Null until the
+  // proxy has observed this server's configuration handshake at least once.
+  private volatile @Nullable Long registryFingerprint;
 
   public VelocityRegisteredServer(@Nullable VelocityServer server, ServerInfo serverInfo) {
     this.server = server;
@@ -81,6 +86,18 @@ public class VelocityRegisteredServer implements RegisteredServer, ForwardingAud
   @Override
   public ServerInfo getServerInfo() {
     return serverInfo;
+  }
+
+  /**
+   * Returns the fingerprint of the configuration-state registry data this server last sent, or
+   * {@code null} if the proxy has not yet observed this server's configuration handshake.
+   */
+  public @Nullable Long getRegistryFingerprint() {
+    return registryFingerprint;
+  }
+
+  public void setRegistryFingerprint(@Nullable Long registryFingerprint) {
+    this.registryFingerprint = registryFingerprint;
   }
 
   @Override

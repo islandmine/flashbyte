@@ -608,10 +608,51 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       }
     }
 
+    // Decide between a fully seamless (play-state) switch and a brief reconfigure.
+    //
+    // On 1.20.2+ the world registries (dimension types, biomes, damage types, entity variants, ...)
+    // are session state delivered ONLY during the configuration state; there is no play-state
+    // packet that can resend them. A play-state JoinGame + Respawn therefore reuses whatever
+    // registries the client already holds, which is only safe when the destination's registries are
+    // identical to the client's current ones. If they differ, dimension indices and entity/variant
+    // references resolve against the wrong registry — desyncing entity positions and physics (e.g.
+    // knockback) and potentially disconnecting the client.
+    //
+    // So: stay in play (seamless, no screen) when we can prove the destination's registries match
+    // what the client holds, and otherwise fall back to the configuration-state switch (a brief
+    // reconfigure) so the client receives the new registries. Pre-1.20.2 has no configuration state
+    // and carries its registries inside JoinGame, so it always uses the seamless fast switch.
+    if (needsReconfigureForSwitch()) {
+      // Configuration clears the client's world, so the subsequent JoinGame is sent as-is.
+      spawned = false;
+      player.switchToConfigState();
+      return configSwitchFuture;
+    }
+
     // Stay in play state for seamless server switching.
     // The backend goes through its config state independently.
     // The client never leaves play state, so there's no config/loading screen.
     return CompletableFuture.completedFuture(null);
+  }
+
+  /**
+   * Determines whether the upcoming switch must route the client through the configuration state to
+   * resync registries, or whether a fully seamless play-state switch is safe.
+   */
+  private boolean needsReconfigureForSwitch() {
+    if (player.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_20_2)) {
+      // No configuration state; registries travel inside JoinGame. The fast switch is correct.
+      return false;
+    }
+    final VelocityServerConnection inFlight = player.getConnectionInFlight();
+    if (inFlight == null) {
+      return true;
+    }
+    final Long destinationFingerprint = inFlight.getServer().getRegistryFingerprint();
+    final Long clientFingerprint = player.getCurrentRegistryFingerprint();
+    // Seamless only when the destination's registries are known and match the client's current
+    // ones; an unknown destination (never connected to before) is reconfigured to be safe.
+    return destinationFingerprint == null || !destinationFingerprint.equals(clientFingerprint);
   }
 
   /**
@@ -631,13 +672,20 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       player.getConnection().delayedWrite(joinGame);
       // Required for Legacy Forge
       player.getPhase().onFirstJoin(player);
-    } else {
-      // Server switch. The client stays in play state (we skip the config-state transition that
-      // causes the visible "reconfiguring" screen), and we use the JoinGame + Respawn "fast
-      // switch". By having the client accept the backend's JoinGame, it adopts the backend's
-      // entity id, so no entity-id rewriting is needed and there is no desync — the same approach
-      // LimboAPI and Velocity's pre-1.20.2 switch use.
+    } else if (!spawned) {
+      // The client was routed through the configuration state for this switch (its world was
+      // cleared and it received the destination's registries), so just send the JoinGame as-is —
+      // no Respawn dance is needed, exactly like upstream Velocity's 1.20.2+ switch.
       spawned = true;
+      player.getTabList().clearAll();
+      player.getConnection().delayedWrite(joinGame);
+    } else {
+      // Seamless switch: the client stayed in play state with the previous world still loaded, so
+      // we tear it down with a JoinGame + Respawn "fast switch". By having the client accept the
+      // backend's JoinGame it adopts the backend's entity id (no entity-id rewriting needed), and
+      // we only take this path when the destination's registries match the client's current ones
+      // (see doSwitch), so there is no registry/entity desync — the same approach Velocity's
+      // pre-1.20.2 switch uses.
       player.getTabList().clearAll();
 
       if (player.getConnection().getType() == ConnectionTypes.LEGACY_FORGE) {

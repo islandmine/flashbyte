@@ -204,6 +204,11 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
   private volatile ChatQueue chatQueue;
   private final ChatBuilderFactory chatBuilderFactory;
   private final BossBarManager bossBarManager;
+  // Fingerprint of the configuration-state registry data the client currently holds (set whenever
+  // the client actually goes through the configuration state). A seamless play-state switch is only
+  // safe to a destination whose registry fingerprint matches this; otherwise the client must be
+  // reconfigured so it receives the destination's registries.
+  private @Nullable Long currentRegistryFingerprint;
 
   ConnectedPlayer(VelocityServer server, GameProfile profile, MinecraftConnection connection,
                   @Nullable InetSocketAddress virtualHost, @Nullable String rawVirtualHost, boolean onlineMode,
@@ -244,6 +249,14 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
 
   public ChatBuilderFactory getChatBuilderFactory() {
     return chatBuilderFactory;
+  }
+
+  public @Nullable Long getCurrentRegistryFingerprint() {
+    return currentRegistryFingerprint;
+  }
+
+  public void setCurrentRegistryFingerprint(@Nullable Long currentRegistryFingerprint) {
+    this.currentRegistryFingerprint = currentRegistryFingerprint;
   }
 
   public ChatQueue getChatQueue() {

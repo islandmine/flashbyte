@@ -27,6 +27,9 @@ steps:
   build:
     image: eclipse-temurin:21-jdk
     commands:
+      # The init-manifest Gradle convention plugin runs `git rev-parse HEAD` to
+      # include the source revision in SNAPSHOT artifact manifests.
+      - apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
       - chmod +x ./gradlew
       # assemble builds the runnable shadow jar (flashbyte-proxy). Tee to build.log so the
       # failure notifier can attach the tail of the output.
@@ -57,6 +60,8 @@ steps:
   publish:
     image: eclipse-temurin:21-jdk
     commands:
+      # Keep the manifest revision available during publication too.
+      - apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
       - chmod +x ./gradlew
       # Gradle picks these up automatically as project properties
       # `reposiliteRepositoryPrivateUsername` / `reposiliteRepositoryPrivatePassword`

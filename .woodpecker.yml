@@ -1,0 +1,173 @@
+# .woodpecker.yml — CI/release pipeline for the Flashbyte proxy.
+#
+# Assumptions about this repo:
+#   - Uses the Gradle wrapper (./gradlew)
+#   - Version is declared in gradle.properties as:   version=4.0.0-SNAPSHOT
+#   - The proxy module (flashbyte-proxy) applies the flashbyte-publish convention plugin,
+#     which publishes to the Reposilite repo "reposiliteRepositoryPrivate" using
+#     credentials(PasswordCredentials::class).
+#
+# Per-repo secrets needed (Woodpecker UI -> Repo -> Settings -> Secrets):
+#   reposilite_user        Reposilite username with write access to /private
+#   reposilite_password    Reposilite token/password
+#   git_push_token         GitHub PAT with `repo` scope (push back the bump commit + tag)
+#   discord_webhook        Discord channel webhook URL for build notifications
+
+when:
+  - event: push
+  - event: pull_request
+
+clone:
+  git:
+    image: woodpeckerci/plugin-git
+    settings:
+      recursive: false
+
+steps:
+  build:
+    image: eclipse-temurin:21-jdk
+    commands:
+      - chmod +x ./gradlew
+      # assemble builds the runnable shadow jar (flashbyte-proxy). Tee to build.log so the
+      # failure notifier can attach the tail of the output.
+      - ./gradlew --no-daemon --no-configuration-cache assemble > build.log 2>&1 || (cat build.log; exit 1)
+      - cat build.log
+
+  # ---- Everything below runs only on push to dev/4.0.0 ----
+
+  bump-version:
+    image: eclipse-temurin:21-jdk
+    commands:
+      # Read current version from gradle.properties, strip -SNAPSHOT, bump the patch.
+      - CURRENT=$(grep -E '^version=' gradle.properties | cut -d= -f2 | tr -d '[:space:]')
+      - BASE=$${CURRENT%-SNAPSHOT}
+      - MAJOR=$(echo $BASE | cut -d. -f1)
+      - MINOR=$(echo $BASE | cut -d. -f2)
+      - PATCH=$(echo $BASE | cut -d. -f3)
+      - NEW="$MAJOR.$MINOR.$((PATCH + 1))"
+      - echo "Bumping $CURRENT -> $NEW"
+      - sed -i "s/^version=.*/version=$NEW/" gradle.properties
+      - echo $NEW > .new-version
+    when:
+      branch: dev/4.0.0
+      event: push
+    depends_on:
+      - build
+
+  publish:
+    image: eclipse-temurin:21-jdk
+    commands:
+      - chmod +x ./gradlew
+      # Gradle picks these up automatically as project properties
+      # `reposiliteRepositoryPrivateUsername` / `reposiliteRepositoryPrivatePassword`
+      # because of credentials(PasswordCredentials::class) in the flashbyte-publish plugin.
+      - ./gradlew --no-daemon --no-configuration-cache publish
+    environment:
+      ORG_GRADLE_PROJECT_reposiliteRepositoryPrivateUsername:
+        from_secret: reposilite_user
+      ORG_GRADLE_PROJECT_reposiliteRepositoryPrivatePassword:
+        from_secret: reposilite_password
+    when:
+      branch: dev/4.0.0
+      event: push
+    depends_on:
+      - bump-version
+
+  tag-and-push:
+    image: alpine/git:latest
+    commands:
+      - NEW=$(cat .new-version)
+      - git config user.email "woodpecker-ci@islandmine.net"
+      - git config user.name "Woodpecker CI"
+      - git remote set-url origin https://x-access-token:$${GIT_PUSH_TOKEN}@github.com/$${CI_REPO}.git
+      - git add gradle.properties
+      - 'git commit -m "chore(release): v$NEW [CI SKIP]"'
+      - git tag -a "v$NEW" -m "Release v$NEW"
+      - git push origin HEAD:dev/4.0.0
+      - git push origin "v$NEW"
+    environment:
+      GIT_PUSH_TOKEN:
+        from_secret: git_push_token
+    when:
+      branch: dev/4.0.0
+      event: push
+    depends_on:
+      - publish
+
+  # ---- Discord notifications (run on every pipeline, pass or fail) ----
+
+  notify-success:
+    image: alpine:latest
+    commands:
+      - apk add --no-cache curl jq
+      - |
+        jq -n \
+          --arg url "$CI_PIPELINE_URL" \
+          --arg repo "$CI_REPO" \
+          --arg branch "$CI_COMMIT_BRANCH" \
+          --arg sha "$CI_COMMIT_SHA" \
+          --arg author "$CI_COMMIT_AUTHOR" \
+          --arg msg "$CI_COMMIT_MESSAGE" \
+          '{
+            username: "Woodpecker CI",
+            embeds: [{
+              title: "✅ Build succeeded",
+              url: $url,
+              color: 3066993,
+              fields: [
+                { name: "Repo", value: (if $repo == "" then "-" else $repo end), inline: true },
+                { name: "Branch", value: (if $branch == "" then "-" else $branch end), inline: true },
+                { name: "Commit", value: (if $sha == "" then "-" else $sha[0:8] end), inline: true },
+                { name: "Author", value: (if $author == "" then "-" else $author end), inline: true },
+                { name: "Message", value: (if $msg == "" then "-" else $msg[0:1000] end) }
+              ]
+            }]
+          }' | curl -sf -H "Content-Type: application/json" -X POST -d @- "$DISCORD_WEBHOOK"
+    environment:
+      DISCORD_WEBHOOK:
+        from_secret: discord_webhook
+    when:
+      status: [ success ]
+    depends_on:
+      - build
+
+  notify-failure:
+    image: alpine:latest
+    commands:
+      - apk add --no-cache curl jq
+      - |
+        LOGS="No build log was captured (the pipeline failed before or outside the build step)."
+        if [ -f build.log ]; then
+          LOGS="$(tail -c 1500 build.log)"
+        fi
+        jq -n \
+          --arg url "$CI_PIPELINE_URL" \
+          --arg repo "$CI_REPO" \
+          --arg branch "$CI_COMMIT_BRANCH" \
+          --arg sha "$CI_COMMIT_SHA" \
+          --arg author "$CI_COMMIT_AUTHOR" \
+          --arg msg "$CI_COMMIT_MESSAGE" \
+          --arg logs "$LOGS" \
+          '{
+            username: "Woodpecker CI",
+            embeds: [{
+              title: "❌ Build failed",
+              url: $url,
+              color: 15158332,
+              fields: [
+                { name: "Repo", value: (if $repo == "" then "-" else $repo end), inline: true },
+                { name: "Branch", value: (if $branch == "" then "-" else $branch end), inline: true },
+                { name: "Commit", value: (if $sha == "" then "-" else $sha[0:8] end), inline: true },
+                { name: "Author", value: (if $author == "" then "-" else $author end), inline: true },
+                { name: "Message", value: (if $msg == "" then "-" else $msg[0:1000] end) }
+              ],
+              description: ("**Why it failed (last log lines):**\n```\n" + $logs + "\n```")
+            }]
+          }' | curl -sf -H "Content-Type: application/json" -X POST -d @- "$DISCORD_WEBHOOK"
+    environment:
+      DISCORD_WEBHOOK:
+        from_secret: discord_webhook
+    when:
+      status: [ failure ]
+    depends_on:
+      - build

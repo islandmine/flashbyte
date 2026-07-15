@@ -80,6 +80,7 @@ gradle-app.setting
 .gradletasknamecache
 
 ### Other trash ###
+.env
 logs/
 /velocity.toml
 /forwarding.secret

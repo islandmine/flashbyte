@@ -34,8 +34,18 @@ import io.netty.buffer.ByteBuf;
  */
 public class GameEventPacket implements MinecraftPacket {
 
+  /**
+   * Game event id 3: "Change game mode". The {@link #value} carries the gamemode ordinal
+   * (0 survival, 1 creative, 2 adventure, 3 spectator). Used by the seamless switch to restore the
+   * player's real gamemode after briefly forcing spectator to skip the "Loading terrain" screen.
+   */
+  public static final short CHANGE_GAME_MODE = 3;
+
   /** Game event id 13: "Start waiting for level chunks" (1.20.3+). */
   public static final short START_WAITING_FOR_LEVEL_CHUNKS = 13;
+
+  /** Gamemode ordinal for spectator, used with {@link #CHANGE_GAME_MODE}. */
+  public static final float GAME_MODE_SPECTATOR = 3f;
 
   private short event;
   private float value;

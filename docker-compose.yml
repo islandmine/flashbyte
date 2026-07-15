@@ -7,7 +7,15 @@ services:
     tty: true
     working_dir: /server
 
-    entrypoint: ["java", "-Xms1G", "-Xmx1G", "-jar", "/server/flashbyte.jar"]
+    # entrypoint.sh downloads the latest flashbyte-proxy snapshot from the Maven repo
+    # using the credentials in .env, then execs the jar.
+    entrypoint: ["/bin/sh", "/server/entrypoint.sh"]
+
+    environment:
+      FLASHBYTE_REPO_URL: "http://repo.islandmine.net/private/com/velocitypowered/flashbyte-proxy/4.0.0-SNAPSHOT/flashbyte-proxy-4.0.0-SNAPSHOT-all.jar"
+      FLASHBYTE_REPO_USER: "${FLASHBYTE_REPO_USER}"
+      FLASHBYTE_REPO_PASS: "${FLASHBYTE_REPO_PASS}"
+      JAVA_OPTS: "-Xms1G -Xmx1G"
 
     ports:
       - "25565:25577"

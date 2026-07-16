@@ -87,7 +87,6 @@ import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import net.kyori.adventure.key.Key;
@@ -122,21 +121,6 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   // reloads in place with no screen), which assumes all backends share the same registries.
   private static final boolean RECONFIGURE_ON_REGISTRY_MISMATCH =
       Boolean.getBoolean("flashbyte.reconfigure-on-registry-mismatch");
-
-  // On 1.20.3+ a play-state JoinGame + Respawn otherwise flashes the "Loading terrain"
-  // (ReceivingLevelScreen) until the chunk under the player is meshed. To make the switch fully
-  // screenless we send the Respawn as spectator: the client's LevelLoadStatusManager marks the
-  // level ready immediately for a spectator, so the screen never renders, and we restore the real
-  // gamemode a few ticks later. Set -Dflashbyte.seamless-hide-loading-screen=false to disable and
-  // fall back to game-event-13-only behaviour (which can still briefly show the screen).
-  private static final boolean HIDE_LOADING_SCREEN =
-      !"false".equalsIgnoreCase(System.getProperty("flashbyte.seamless-hide-loading-screen"));
-
-  // How long after the spectator Respawn to restore the real gamemode client-side. Must span at
-  // least one client tick (50ms) so the status manager observes the spectator flag before we clear
-  // it, but stay short enough to be imperceptible. Overridable for tuning on slow clients.
-  private static final long RESTORE_GAMEMODE_DELAY_MS =
-      Long.getLong("flashbyte.seamless-restore-gamemode-delay-ms", 250L);
 
   private final ConnectedPlayer player;
   private boolean spawned = false;
@@ -776,56 +760,25 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   private void doFastClientServerSwitch(JoinGamePacket joinGame) {
     // Send the backend's JoinGame followed by a Respawn in the correct dimension. The client
     // adopts the backend's entity id from the JoinGame (so no entity-id rewriting is needed), and
-    // since we stay in play state there is no config-state screen — the world reloads like a
-    // dimension change.
+    // since we stay in play state there is no config-state screen — the world reloads in place.
     final RespawnPacket respawn = RespawnPacket.fromJoinGame(joinGame);
 
     if (player.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_16)) {
       joinGame.setDimension(joinGame.getDimension() == 0 ? -1 : 0);
     }
 
-    // On 1.20.3+ the client shows the "Loading terrain" (ReceivingLevelScreen) after a play-state
-    // JoinGame/Respawn and holds it until game event 13 ("start waiting for level chunks") arrives
-    // AND the chunk under the player has been meshed — so even with event 13 sent immediately the
-    // screen still flashes for the fraction of a second the mesh takes. The client's
-    // LevelLoadStatusManager, however, treats the level as ready instantly while the player is a
-    // spectator. So we respawn the client as spectator (screen never renders), fire event 13 to arm
-    // the check, then restore the real gamemode a few ticks later. The backend is unaffected —
-    // gamemode in Respawn/GameEvent is purely client-side display state.
-    final short realGamemode = respawn.getGamemode();
-    final boolean hideScreen = HIDE_LOADING_SCREEN
-        && player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_3)
-        && realGamemode != (short) GameEventPacket.GAME_MODE_SPECTATOR;
-    if (hideScreen) {
-      respawn.setGamemode((short) GameEventPacket.GAME_MODE_SPECTATOR);
-    }
-
     player.getConnection().delayedWrite(joinGame);
     player.getConnection().delayedWrite(respawn);
 
+    // On 1.20.3+ the client parks on the "Loading terrain" (ReceivingLevelScreen) until it receives
+    // game event 13 ("start waiting for level chunks") and the chunk under the player is meshed.
+    // Sending event 13 immediately lets the new world's chunks stream straight in and the screen
+    // close as soon as the player's chunk is ready. The gamemode is left untouched so client-side
+    // abilities (flight, and backend mechanics built on them like double jump) stay in sync.
     if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_3)) {
       player.getConnection().delayedWrite(
           new GameEventPacket(GameEventPacket.START_WAITING_FOR_LEVEL_CHUNKS, 0f));
     }
-
-    if (hideScreen) {
-      scheduleGamemodeRestore(realGamemode);
-    }
-  }
-
-  /**
-   * Restores the player's real gamemode a short delay after a screenless switch temporarily forced
-   * spectator. The delay must outlast at least one client tick so the loading screen has already
-   * closed; the write is skipped if the connection dropped or left the play state in the meantime
-   * (e.g. another switch started).
-   */
-  private void scheduleGamemodeRestore(short realGamemode) {
-    final MinecraftConnection connection = player.getConnection();
-    connection.eventLoop().schedule(() -> {
-      if (!connection.isClosed() && connection.getState() == StateRegistry.PLAY) {
-        connection.write(new GameEventPacket(GameEventPacket.CHANGE_GAME_MODE, realGamemode));
-      }
-    }, RESTORE_GAMEMODE_DELAY_MS, TimeUnit.MILLISECONDS);
   }
 
   private void doSafeClientServerSwitch(JoinGamePacket joinGame) {

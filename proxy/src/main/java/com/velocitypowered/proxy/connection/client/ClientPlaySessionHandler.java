@@ -691,6 +691,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
    */
   public void handleBackendJoinGame(JoinGamePacket joinGame, VelocityServerConnection destination) {
     final MinecraftConnection serverMc = destination.ensureConnected();
+    boolean seamlessSwitch = false;
 
     if (!hasJoinedInitially) {
       // True first join — send JoinGame as-is.
@@ -714,6 +715,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       // (see doSwitch), so there is no registry/entity desync — the same approach Velocity's
       // pre-1.20.2 switch uses.
       player.getTabList().clearAll();
+      seamlessSwitch = true;
 
       if (player.getConnection().getType() == ConnectionTypes.LEGACY_FORGE) {
         this.doSafeClientServerSwitch(joinGame);
@@ -757,8 +759,9 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     loginPluginMessagesBytes.set(0);
     loginPluginMessagesCount.set(0);
 
-    // Clear any title from the previous server.
-    if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_8)) {
+    // Clear any title from the previous server. Skipped on a seamless switch so a proxy-managed
+    // transition overlay (the black loading screen) survives the in-place reload.
+    if (!seamlessSwitch && player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_8)) {
       player.getConnection().delayedWrite(
           GenericTitlePacket.constructTitlePacket(GenericTitlePacket.ActionType.RESET,
               player.getProtocolVersion()));

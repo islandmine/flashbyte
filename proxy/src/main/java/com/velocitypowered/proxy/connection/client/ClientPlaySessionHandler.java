@@ -44,6 +44,7 @@ import com.velocitypowered.proxy.protocol.StateRegistry;
 import com.velocitypowered.proxy.protocol.netty.MinecraftDecoder;
 import com.velocitypowered.proxy.protocol.packet.BossBarPacket;
 import com.velocitypowered.proxy.protocol.packet.ClientSettingsPacket;
+import com.velocitypowered.proxy.protocol.packet.GameEventPacket;
 import com.velocitypowered.proxy.protocol.packet.JoinGamePacket;
 import com.velocitypowered.proxy.protocol.packet.KeepAlivePacket;
 import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
@@ -86,6 +87,7 @@ import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import net.kyori.adventure.key.Key;
@@ -113,6 +115,8 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       Integer.getInteger("velocity.max-queued-login-plugin-messages", 1024);
 
   private static final Logger logger = LogManager.getLogger(ClientPlaySessionHandler.class);
+
+  private static final long GAMEMODE_RESTORE_DELAY_MS = 400L;
 
   // When true, a 1.20.2+ switch to a backend whose registries differ from what the client holds is
   // routed through a brief config-state reconfigure instead of a seamless play-state switch, to
@@ -766,20 +770,44 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     // adopts the backend's entity id from the JoinGame (so no entity-id rewriting is needed), and
     // since we stay in play state there is no config-state screen — the world reloads in place.
     //
-    // On 1.20.3+ the opaque "Loading terrain" (ReceivingLevelScreen) opens ONLY on game event 13
-    // ("start waiting for level chunks"). Neither the JoinGame nor the Respawn opens it, so the
-    // proxy sends no event 13 here, and BackendPlaySessionHandler swallows the destination
-    // server's own event 13 for the rest of the session. The client therefore never leaves the
-    // rendered world: the old chunks vanish with the Respawn and the new server's chunks stream
-    // straight in, with the paper-side transition overlay covering the swap.
+    // Two independent defenses keep the level-load screen from ever appearing on 1.20.3+:
+    // 1. No game event 13 reaches the client mid-switch - the proxy sends none here and
+    //    BackendPlaySessionHandler swallows the destination server's own event 13 after the first
+    //    switch, so the event-gated ReceivingLevelScreen is never triggered.
+    // 2. The switch briefly presents the client as spectator (JoinGame + Respawn), because
+    //    spectators are exempt from the "waiting for level chunks" condition - if a client
+    //    version opens the screen straight from the respawn, it closes the same tick. The real
+    //    gamemode is restored moments later and the backend's join sequence resyncs abilities.
+    // The client therefore never leaves the rendered world: the old chunks vanish with the
+    // Respawn and the new server's chunks stream straight in, with the paper-side transition
+    // overlay covering the swap.
     final RespawnPacket respawn = RespawnPacket.fromJoinGame(joinGame);
+    final short realGamemode = joinGame.getGamemode();
+    final boolean maskGamemode =
+        player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_3)
+            && realGamemode != (short) GameEventPacket.GAME_MODE_SPECTATOR;
 
     if (player.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_16)) {
       joinGame.setDimension(joinGame.getDimension() == 0 ? -1 : 0);
     }
 
+    if (maskGamemode) {
+      joinGame.setGamemode((short) GameEventPacket.GAME_MODE_SPECTATOR);
+      respawn.setGamemode((short) GameEventPacket.GAME_MODE_SPECTATOR);
+    }
+
     player.getConnection().delayedWrite(joinGame);
     player.getConnection().delayedWrite(respawn);
+
+    if (maskGamemode) {
+      player.getConnection().eventLoop().schedule(() -> {
+        if (player.getConnection().isClosed()) {
+          return;
+        }
+        player.getConnection().write(
+            new GameEventPacket(GameEventPacket.CHANGE_GAME_MODE, realGamemode));
+      }, GAMEMODE_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS);
+    }
   }
 
   public boolean hasSwitchedServers() {

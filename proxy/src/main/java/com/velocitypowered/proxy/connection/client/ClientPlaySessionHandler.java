@@ -746,8 +746,9 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     loginPluginMessagesBytes.set(0);
     loginPluginMessagesCount.set(0);
 
-    // Clear any title from the previous server. Skipped on a seamless switch so a proxy-managed
-    // transition overlay (the black loading screen) survives the in-place reload.
+    // Clear any title from the previous server. Skipped on a seamless switch so the paper-side
+    // transition overlay (core's fullscreen loading glyph) survives the in-place reload and
+    // keeps covering the chunk swap.
     if (!seamlessSwitch && player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_8)) {
       player.getConnection().delayedWrite(
           GenericTitlePacket.constructTitlePacket(GenericTitlePacket.ActionType.RESET,

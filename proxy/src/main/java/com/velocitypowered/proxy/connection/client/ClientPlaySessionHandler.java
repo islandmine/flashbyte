@@ -87,6 +87,7 @@ import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import net.kyori.adventure.key.Key;
@@ -114,6 +115,8 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       Integer.getInteger("velocity.max-queued-login-plugin-messages", 1024);
 
   private static final Logger logger = LogManager.getLogger(ClientPlaySessionHandler.class);
+
+  private static final long GAMEMODE_RESTORE_DELAY_MS = 400L;
 
   // When true, a 1.20.2+ switch to a backend whose registries differ from what the client holds is
   // routed through a brief config-state reconfigure instead of a seamless play-state switch, to
@@ -762,22 +765,44 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     // adopts the backend's entity id from the JoinGame (so no entity-id rewriting is needed), and
     // since we stay in play state there is no config-state screen — the world reloads in place.
     final RespawnPacket respawn = RespawnPacket.fromJoinGame(joinGame);
+    final short realGamemode = joinGame.getGamemode();
+    final boolean skipLoadingScreen =
+        player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_3)
+            && realGamemode != (short) GameEventPacket.GAME_MODE_SPECTATOR;
 
     if (player.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_16)) {
       joinGame.setDimension(joinGame.getDimension() == 0 ? -1 : 0);
     }
 
+    // On 1.20.3+ the respawn opens the opaque "Loading terrain" (ReceivingLevelScreen), which sits
+    // over the whole frame — including any transition overlay title — until the chunk under the
+    // player is meshed. Spectators are exempt from that chunk wait, so the switch briefly presents
+    // the client as spectator: the screen never opens, the world reloads fully in place, and any
+    // overlay title keeps rendering. The real gamemode is restored moments later, once the screen
+    // decision has long passed; the backend's own join sequence then resyncs abilities.
+    if (skipLoadingScreen) {
+      joinGame.setGamemode((short) GameEventPacket.GAME_MODE_SPECTATOR);
+      respawn.setGamemode((short) GameEventPacket.GAME_MODE_SPECTATOR);
+    }
+
     player.getConnection().delayedWrite(joinGame);
     player.getConnection().delayedWrite(respawn);
 
-    // On 1.20.3+ the client parks on the "Loading terrain" (ReceivingLevelScreen) until it receives
-    // game event 13 ("start waiting for level chunks") and the chunk under the player is meshed.
-    // Sending event 13 immediately lets the new world's chunks stream straight in and the screen
-    // close as soon as the player's chunk is ready. The gamemode is left untouched so client-side
-    // abilities (flight, and backend mechanics built on them like double jump) stay in sync.
+    // Game event 13 ("start waiting for level chunks") lets the new world's chunks stream in
+    // immediately on 1.20.3+.
     if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_3)) {
       player.getConnection().delayedWrite(
           new GameEventPacket(GameEventPacket.START_WAITING_FOR_LEVEL_CHUNKS, 0f));
+    }
+
+    if (skipLoadingScreen) {
+      player.getConnection().eventLoop().schedule(() -> {
+        if (player.getConnection().isClosed()) {
+          return;
+        }
+        player.getConnection().write(
+            new GameEventPacket(GameEventPacket.CHANGE_GAME_MODE, realGamemode));
+      }, GAMEMODE_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS);
     }
   }
 

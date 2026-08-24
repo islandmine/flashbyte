@@ -87,7 +87,6 @@ import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import net.kyori.adventure.key.Key;
@@ -115,8 +114,6 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       Integer.getInteger("velocity.max-queued-login-plugin-messages", 1024);
 
   private static final Logger logger = LogManager.getLogger(ClientPlaySessionHandler.class);
-
-  private static final long GAMEMODE_RESTORE_DELAY_MS = 400L;
 
   // When true, a 1.20.2+ switch to a backend whose registries differ from what the client holds is
   // routed through a brief config-state reconfigure instead of a seamless play-state switch, to
@@ -766,28 +763,17 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     // adopts the backend's entity id from the JoinGame (so no entity-id rewriting is needed), and
     // since we stay in play state there is no config-state screen — the world reloads in place.
     //
-    // The level-load screen cannot be starved away on modern clients: since 1.21.2-era clients
-    // (and 26.x) the screen opens with the respawn and its state machine REQUIRES game event 13
-    // ("start waiting for level chunks") to advance - withholding the event leaves the client
-    // stuck on the screen forever. So the event is sent immediately, and the switch instead
-    // minimizes the screen's lifetime: the JoinGame + Respawn briefly present the client as
-    // spectator, and spectators complete the "waiting for player chunk" phase instantly, closing
-    // the screen within a tick instead of holding it until the player's chunk is meshed. The real
-    // gamemode is restored moments later and the backend's join sequence resyncs abilities. The
-    // paper-side transition overlay covers whatever remains of the swap.
+    // Measured on 26.1.2 (DebugClient switch captures): the LevelLoadingScreen opens with the
+    // respawn, REQUIRES game event 13 to advance (withholding it leaves the client stuck), and
+    // has NO spectator exemption - a spectator-masked client kept the screen up for the full
+    // chunk wait while the mask desynced abilities. So the switch sends the packets straight and
+    // event 13 immediately; the screen's visual is neutralized client-side instead (the
+    // texturepack no-ops the menu-blur post effect, so the screen draws nothing over the frame
+    // and the proxy plugin's transition overlay stays visible throughout).
     final RespawnPacket respawn = RespawnPacket.fromJoinGame(joinGame);
-    final short realGamemode = joinGame.getGamemode();
-    final boolean maskGamemode =
-        player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_3)
-            && realGamemode != (short) GameEventPacket.GAME_MODE_SPECTATOR;
 
     if (player.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_16)) {
       joinGame.setDimension(joinGame.getDimension() == 0 ? -1 : 0);
-    }
-
-    if (maskGamemode) {
-      joinGame.setGamemode((short) GameEventPacket.GAME_MODE_SPECTATOR);
-      respawn.setGamemode((short) GameEventPacket.GAME_MODE_SPECTATOR);
     }
 
     player.getConnection().delayedWrite(joinGame);
@@ -796,16 +782,6 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_3)) {
       player.getConnection().delayedWrite(
           new GameEventPacket(GameEventPacket.START_WAITING_FOR_LEVEL_CHUNKS, 0f));
-    }
-
-    if (maskGamemode) {
-      player.getConnection().eventLoop().schedule(() -> {
-        if (player.getConnection().isClosed()) {
-          return;
-        }
-        player.getConnection().write(
-            new GameEventPacket(GameEventPacket.CHANGE_GAME_MODE, realGamemode));
-      }, GAMEMODE_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS);
     }
   }
 

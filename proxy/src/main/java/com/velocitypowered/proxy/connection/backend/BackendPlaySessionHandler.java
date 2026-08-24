@@ -55,7 +55,6 @@ import com.velocitypowered.proxy.protocol.packet.ClientSettingsPacket;
 import com.velocitypowered.proxy.protocol.packet.ClientboundCookieRequestPacket;
 import com.velocitypowered.proxy.protocol.packet.ClientboundStoreCookiePacket;
 import com.velocitypowered.proxy.protocol.packet.DisconnectPacket;
-import com.velocitypowered.proxy.protocol.packet.GameEventPacket;
 import com.velocitypowered.proxy.protocol.packet.KeepAlivePacket;
 import com.velocitypowered.proxy.protocol.packet.LegacyPlayerListItemPacket;
 import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
@@ -176,20 +175,6 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
     serverConn.disconnect();
     serverConn.getPlayer().handleConnectionException(serverConn.getServer(), packet, true);
     return true;
-  }
-
-  @Override
-  public boolean handle(GameEventPacket packet) {
-    // Game event 13 ("start waiting for level chunks") is what opens the opaque "Loading terrain"
-    // screen on 1.20.3+. After the initial join the client always keeps a rendered world across
-    // seamless switches, so the destination server's event 13 would only flash that screen over
-    // the in-place reload — swallow it. The first join forwards it untouched so the initial world
-    // load keeps its normal loading screen.
-    if (packet.getEvent() == GameEventPacket.START_WAITING_FOR_LEVEL_CHUNKS
-        && playerSessionHandler.hasSwitchedServers()) {
-      return true;
-    }
-    return false;
   }
 
   @Override

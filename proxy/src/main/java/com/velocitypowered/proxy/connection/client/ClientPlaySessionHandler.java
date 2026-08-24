@@ -128,7 +128,6 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   private final ConnectedPlayer player;
   private boolean spawned = false;
   private boolean hasJoinedInitially = false;
-  private boolean hasSwitchedServers = false;
   private final List<UUID> serverBossBars = new ArrayList<>();
   private final Queue<PluginMessagePacket> loginPluginMessages = new ConcurrentLinkedQueue<>();
   private final AtomicLong loginPluginMessagesBytes = new AtomicLong();
@@ -681,9 +680,6 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     final MinecraftConnection serverMc = destination.ensureConnected();
     boolean seamlessSwitch = false;
 
-    if (hasJoinedInitially) {
-      hasSwitchedServers = true;
-    }
     if (!hasJoinedInitially) {
       // True first join — send JoinGame as-is.
       hasJoinedInitially = true;
@@ -770,17 +766,15 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     // adopts the backend's entity id from the JoinGame (so no entity-id rewriting is needed), and
     // since we stay in play state there is no config-state screen — the world reloads in place.
     //
-    // Two independent defenses keep the level-load screen from ever appearing on 1.20.3+:
-    // 1. No game event 13 reaches the client mid-switch - the proxy sends none here and
-    //    BackendPlaySessionHandler swallows the destination server's own event 13 after the first
-    //    switch, so the event-gated ReceivingLevelScreen is never triggered.
-    // 2. The switch briefly presents the client as spectator (JoinGame + Respawn), because
-    //    spectators are exempt from the "waiting for level chunks" condition - if a client
-    //    version opens the screen straight from the respawn, it closes the same tick. The real
-    //    gamemode is restored moments later and the backend's join sequence resyncs abilities.
-    // The client therefore never leaves the rendered world: the old chunks vanish with the
-    // Respawn and the new server's chunks stream straight in, with the paper-side transition
-    // overlay covering the swap.
+    // The level-load screen cannot be starved away on modern clients: since 1.21.2-era clients
+    // (and 26.x) the screen opens with the respawn and its state machine REQUIRES game event 13
+    // ("start waiting for level chunks") to advance - withholding the event leaves the client
+    // stuck on the screen forever. So the event is sent immediately, and the switch instead
+    // minimizes the screen's lifetime: the JoinGame + Respawn briefly present the client as
+    // spectator, and spectators complete the "waiting for player chunk" phase instantly, closing
+    // the screen within a tick instead of holding it until the player's chunk is meshed. The real
+    // gamemode is restored moments later and the backend's join sequence resyncs abilities. The
+    // paper-side transition overlay covers whatever remains of the swap.
     final RespawnPacket respawn = RespawnPacket.fromJoinGame(joinGame);
     final short realGamemode = joinGame.getGamemode();
     final boolean maskGamemode =
@@ -799,6 +793,11 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     player.getConnection().delayedWrite(joinGame);
     player.getConnection().delayedWrite(respawn);
 
+    if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_3)) {
+      player.getConnection().delayedWrite(
+          new GameEventPacket(GameEventPacket.START_WAITING_FOR_LEVEL_CHUNKS, 0f));
+    }
+
     if (maskGamemode) {
       player.getConnection().eventLoop().schedule(() -> {
         if (player.getConnection().isClosed()) {
@@ -808,10 +807,6 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
             new GameEventPacket(GameEventPacket.CHANGE_GAME_MODE, realGamemode));
       }, GAMEMODE_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS);
     }
-  }
-
-  public boolean hasSwitchedServers() {
-    return hasSwitchedServers;
   }
 
   private void doSafeClientServerSwitch(JoinGamePacket joinGame) {

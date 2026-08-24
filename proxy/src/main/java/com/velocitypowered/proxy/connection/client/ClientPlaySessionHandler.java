@@ -44,7 +44,6 @@ import com.velocitypowered.proxy.protocol.StateRegistry;
 import com.velocitypowered.proxy.protocol.netty.MinecraftDecoder;
 import com.velocitypowered.proxy.protocol.packet.BossBarPacket;
 import com.velocitypowered.proxy.protocol.packet.ClientSettingsPacket;
-import com.velocitypowered.proxy.protocol.packet.GameEventPacket;
 import com.velocitypowered.proxy.protocol.packet.JoinGamePacket;
 import com.velocitypowered.proxy.protocol.packet.KeepAlivePacket;
 import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
@@ -87,7 +86,6 @@ import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import net.kyori.adventure.key.Key;
@@ -116,8 +114,6 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
   private static final Logger logger = LogManager.getLogger(ClientPlaySessionHandler.class);
 
-  private static final long GAMEMODE_RESTORE_DELAY_MS = 400L;
-
   // When true, a 1.20.2+ switch to a backend whose registries differ from what the client holds is
   // routed through a brief config-state reconfigure instead of a seamless play-state switch, to
   // avoid registry/entity desync. Off by default: every switch stays fully seamless (the world
@@ -128,6 +124,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
   private final ConnectedPlayer player;
   private boolean spawned = false;
   private boolean hasJoinedInitially = false;
+  private boolean hasSwitchedServers = false;
   private final List<UUID> serverBossBars = new ArrayList<>();
   private final Queue<PluginMessagePacket> loginPluginMessages = new ConcurrentLinkedQueue<>();
   private final AtomicLong loginPluginMessagesBytes = new AtomicLong();
@@ -680,6 +677,9 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     final MinecraftConnection serverMc = destination.ensureConnected();
     boolean seamlessSwitch = false;
 
+    if (hasJoinedInitially) {
+      hasSwitchedServers = true;
+    }
     if (!hasJoinedInitially) {
       // True first join — send JoinGame as-is.
       hasJoinedInitially = true;
@@ -765,46 +765,25 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     // Send the backend's JoinGame followed by a Respawn in the correct dimension. The client
     // adopts the backend's entity id from the JoinGame (so no entity-id rewriting is needed), and
     // since we stay in play state there is no config-state screen — the world reloads in place.
+    //
+    // On 1.20.3+ the opaque "Loading terrain" (ReceivingLevelScreen) opens ONLY on game event 13
+    // ("start waiting for level chunks"). Neither the JoinGame nor the Respawn opens it, so the
+    // proxy sends no event 13 here, and BackendPlaySessionHandler swallows the destination
+    // server's own event 13 for the rest of the session. The client therefore never leaves the
+    // rendered world: the old chunks vanish with the Respawn and the new server's chunks stream
+    // straight in, with the paper-side transition overlay covering the swap.
     final RespawnPacket respawn = RespawnPacket.fromJoinGame(joinGame);
-    final short realGamemode = joinGame.getGamemode();
-    final boolean skipLoadingScreen =
-        player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_3)
-            && realGamemode != (short) GameEventPacket.GAME_MODE_SPECTATOR;
 
     if (player.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_16)) {
       joinGame.setDimension(joinGame.getDimension() == 0 ? -1 : 0);
     }
 
-    // On 1.20.3+ the respawn opens the opaque "Loading terrain" (ReceivingLevelScreen), which sits
-    // over the whole frame — including any transition overlay title — until the chunk under the
-    // player is meshed. Spectators are exempt from that chunk wait, so the switch briefly presents
-    // the client as spectator: the screen never opens, the world reloads fully in place, and any
-    // overlay title keeps rendering. The real gamemode is restored moments later, once the screen
-    // decision has long passed; the backend's own join sequence then resyncs abilities.
-    if (skipLoadingScreen) {
-      joinGame.setGamemode((short) GameEventPacket.GAME_MODE_SPECTATOR);
-      respawn.setGamemode((short) GameEventPacket.GAME_MODE_SPECTATOR);
-    }
-
     player.getConnection().delayedWrite(joinGame);
     player.getConnection().delayedWrite(respawn);
+  }
 
-    // Game event 13 ("start waiting for level chunks") lets the new world's chunks stream in
-    // immediately on 1.20.3+.
-    if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_3)) {
-      player.getConnection().delayedWrite(
-          new GameEventPacket(GameEventPacket.START_WAITING_FOR_LEVEL_CHUNKS, 0f));
-    }
-
-    if (skipLoadingScreen) {
-      player.getConnection().eventLoop().schedule(() -> {
-        if (player.getConnection().isClosed()) {
-          return;
-        }
-        player.getConnection().write(
-            new GameEventPacket(GameEventPacket.CHANGE_GAME_MODE, realGamemode));
-      }, GAMEMODE_RESTORE_DELAY_MS, TimeUnit.MILLISECONDS);
-    }
+  public boolean hasSwitchedServers() {
+    return hasSwitchedServers;
   }
 
   private void doSafeClientServerSwitch(JoinGamePacket joinGame) {

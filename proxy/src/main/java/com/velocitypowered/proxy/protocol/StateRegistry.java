@@ -591,15 +591,16 @@ public enum StateRegistry {
       clientbound.register(
           GameEventPacket.class,
           GameEventPacket::new,
-          // Encode-only: the proxy sends this (event 13 during a seamless switch) but backend game
-          // events keep passing through as raw packets. Ids are non-monotonic across versions, so
-          // only the breakpoints where the id changes are listed; the last entry covers up to the
+          // Decoded on 1.20.3+ so BackendPlaySessionHandler can swallow event 13 ("start waiting
+          // for level chunks") after a seamless switch - that event is what opens the opaque
+          // "Loading terrain" screen client-side. Ids are non-monotonic across versions, so only
+          // the breakpoints where the id changes are listed; the last entry covers up to the
           // newest supported version (1.21.9+ and 26.1 share 0x26).
-          map(0x20, MINECRAFT_1_20_3, true),
-          map(0x22, MINECRAFT_1_20_5, true),
-          map(0x23, MINECRAFT_1_21_2, true),
-          map(0x22, MINECRAFT_1_21_5, true),
-          map(0x26, MINECRAFT_1_21_9, true));
+          map(0x20, MINECRAFT_1_20_3, false),
+          map(0x22, MINECRAFT_1_20_5, false),
+          map(0x23, MINECRAFT_1_21_2, false),
+          map(0x22, MINECRAFT_1_21_5, false),
+          map(0x26, MINECRAFT_1_21_9, false));
       clientbound.register(
           RemoveResourcePackPacket.class,
           RemoveResourcePackPacket::new,

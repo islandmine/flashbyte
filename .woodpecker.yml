@@ -25,7 +25,7 @@ clone:
 
 steps:
   build:
-    image: eclipse-temurin:21-jdk
+    image: eclipse-temurin:25-jdk
     commands:
       # The init-manifest Gradle convention plugin runs `git rev-parse HEAD` to
       # include the source revision in SNAPSHOT artifact manifests.
@@ -39,7 +39,7 @@ steps:
   # ---- Everything below runs only on push to dev/4.0.0 ----
 
   bump-version:
-    image: eclipse-temurin:21-jdk
+    image: eclipse-temurin:25-jdk
     commands:
       # Read current version from gradle.properties, strip -SNAPSHOT, bump the patch.
       - CURRENT=$(grep -E '^version=' gradle.properties | cut -d= -f2 | tr -d '[:space:]')
@@ -58,7 +58,7 @@ steps:
       - build
 
   publish:
-    image: eclipse-temurin:21-jdk
+    image: eclipse-temurin:25-jdk
     commands:
       # Keep the manifest revision available during publication too.
       - apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*

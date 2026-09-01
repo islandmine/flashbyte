@@ -1,6 +1,6 @@
 services:
   velocity:
-    image: eclipse-temurin:21-jre
+    image: eclipse-temurin:25-jre
     container_name: flashbyte-proxy
     restart: unless-stopped
     stdin_open: true

@@ -6,23 +6,81 @@ services:
     stdin_open: true
     tty: true
     working_dir: /server
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        [ -n "$$REPO_USER" ] && [ -n "$$REPO_PASS" ] || { echo "REPO_USER/REPO_PASS empty - set FLASHBYTE_REPO_USER and FLASHBYTE_REPO_PASS in .env"; exit 1; }
+        AUTH="Authorization: Basic $$(printf '%s:%s' "$$REPO_USER" "$$REPO_PASS" | base64 -w0)"
 
-    # entrypoint.sh downloads the latest flashbyte-proxy snapshot from the Maven repo
-    # using the credentials in .env, then execs the jar.
-    entrypoint: ["/bin/sh", "/server/entrypoint.sh"]
+        pick() { grep -o "<$$1>[^<]*</$$1>" | head -1 | sed 's/<[^>]*>//g'; }
 
+        get() {
+          if ! wget -q -O - --header="$$AUTH" "$$1"; then
+            echo "GET $$1 failed: $$(wget -S --spider --header="$$AUTH" "$$1" 2>&1 | grep 'HTTP/' | tail -1)" >&2
+            return 1
+          fi
+        }
+
+        dl() {
+          echo "Downloading $$2"
+          wget -q --header="$$AUTH" -O "$$1" "$$2" || { echo "ERROR: download failed: $$2"; exit 1; }
+          if [ "$$(head -c 2 "$$1")" != "PK" ]; then
+            echo "ERROR: $$1 is not a valid jar. First bytes:"; head -c 300 "$$1"; echo; exit 1
+          fi
+        }
+
+        pull() {
+          BASE="$$1"; ART="$$2"; OUT="$$3"; CL="$$4"
+          [ -n "$$CL" ] && CLPART="-$$CL" || CLPART=""
+
+          META="$$(get "$$BASE/maven-metadata.xml" || true)"
+          VER="$$(printf '%s' "$$META" | pick release)"
+          [ -n "$$VER" ] || VER="$$(printf '%s' "$$META" | pick latest)"
+          [ -n "$$VER" ] || VER="$$(printf '%s' "$$META" | pick version)"
+          echo "$$ART version: $$VER"
+          [ -n "$$VER" ] || { echo "No version resolved for $$ART (check repo credentials and that CI published it). Metadata was:"; printf '%s\n' "$$META"; exit 1; }
+
+          case "$$VER" in
+            *-SNAPSHOT)
+              SNAPXML="$$(get "$$BASE/$$VER/maven-metadata.xml" || true)"
+              SNAP="$$(printf '%s' "$$SNAPXML" | pick value)"
+              echo "$$ART snapshot build: $$SNAP"
+              [ -n "$$SNAP" ] || { echo "No snapshot build for $$ART. Metadata was:"; printf '%s\n' "$$SNAPXML"; exit 1; }
+              dl "$$OUT" "$$BASE/$$VER/$$ART-$$SNAP$$CLPART.jar"
+              ;;
+            *)
+              dl "$$OUT" "$$BASE/$$VER/$$ART-$$VER$$CLPART.jar"
+              ;;
+          esac
+        }
+
+        mkdir -p /server/plugins
+
+        pull "$$REPO_BASE/private/com/velocitypowered/flashbyte-proxy" flashbyte-proxy /server/flashbyte.jar all
+        pull "$$REPO_BASE/private/net/islandmine/flashbyte" flashbyte /server/plugins/flashbyte.jar ""
+        pull "$$REPO_BASE/private/net/islandmine/flash-essentials" flash-essentials /server/plugins/flash-essentials.jar ""
+
+        LP_URL="$$(wget -q -O - https://metadata.luckperms.net/data/downloads | grep -o '"velocity":"[^"]*"' | cut -d'"' -f4)"
+        if [ -n "$$LP_URL" ]; then
+          echo "Downloading $$LP_URL"
+          wget -q -O /server/plugins/LuckPerms-Velocity.jar "$$LP_URL" || echo "WARN: LuckPerms download failed, keeping existing jar"
+        elif [ ! -f /server/plugins/LuckPerms-Velocity.jar ]; then
+          echo "ERROR: could not resolve LuckPerms-Velocity and no existing jar - flashbyte core requires it"; exit 1
+        fi
+
+        echo "Starting proxy..."
+        exec java $${JAVA_OPTS:-} -jar /server/flashbyte.jar
     environment:
-      FLASHBYTE_REPO_URL: "http://repo.islandmine.net/private/com/velocitypowered/flashbyte-proxy/4.0.0-SNAPSHOT/flashbyte-proxy-4.0.0-SNAPSHOT-all.jar"
-      FLASHBYTE_REPO_USER: "${FLASHBYTE_REPO_USER}"
-      FLASHBYTE_REPO_PASS: "${FLASHBYTE_REPO_PASS}"
+      REPO_BASE: "http://repo.islandmine.net"
+      REPO_USER: "${FLASHBYTE_REPO_USER}"
+      REPO_PASS: "${FLASHBYTE_REPO_PASS}"
       JAVA_OPTS: "-Xms1G -Xmx1G"
-
     ports:
       - "25565:25577"
-
     volumes:
       - ./run:/server
-
     networks:
       - master
 

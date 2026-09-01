@@ -89,6 +89,7 @@ import com.velocitypowered.proxy.protocol.packet.ServerLoginPacket;
 import com.velocitypowered.proxy.protocol.packet.ServerLoginSuccessPacket;
 import com.velocitypowered.proxy.protocol.packet.ServerboundCookieResponsePacket;
 import com.velocitypowered.proxy.protocol.packet.ServerboundCustomClickActionPacket;
+import com.velocitypowered.proxy.protocol.packet.ServerboundPlayerLoadedPacket;
 import com.velocitypowered.proxy.protocol.packet.SetCompressionPacket;
 import com.velocitypowered.proxy.protocol.packet.StatusPingPacket;
 import com.velocitypowered.proxy.protocol.packet.StatusRequestPacket;
@@ -346,6 +347,12 @@ public enum StateRegistry {
           map(0x14, MINECRAFT_1_21_6, false),
           map(0x15, MINECRAFT_26_1, false));
       serverbound.register(
+          ServerboundPlayerLoadedPacket.class,
+          () -> ServerboundPlayerLoadedPacket.INSTANCE,
+          map(0x2A, MINECRAFT_1_21_4, false),
+          map(0x2B, MINECRAFT_1_21_6, false),
+          map(0x2C, MINECRAFT_26_1, false));
+      serverbound.register(
           PluginMessagePacket.class,
           PluginMessagePacket::new,
           map(0x17, MINECRAFT_1_7_2, false),
@@ -591,11 +598,9 @@ public enum StateRegistry {
       clientbound.register(
           GameEventPacket.class,
           GameEventPacket::new,
-          // Decoded on 1.20.3+ so BackendPlaySessionHandler can swallow event 13 ("start waiting
-          // for level chunks") after a seamless switch - that event is what opens the opaque
-          // "Loading terrain" screen client-side. Ids are non-monotonic across versions, so only
-          // the breakpoints where the id changes are listed; the last entry covers up to the
-          // newest supported version (1.21.9+ and 26.1 share 0x26).
+          // Registered so the proxy can send game events itself (gamemode on a seamless switch).
+          // Ids are non-monotonic across versions, so only the breakpoints where the id changes
+          // are listed; the last entry covers up to the newest supported version.
           map(0x20, MINECRAFT_1_20_3, false),
           map(0x22, MINECRAFT_1_20_5, false),
           map(0x23, MINECRAFT_1_21_2, false),

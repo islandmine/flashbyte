@@ -32,5 +32,6 @@ tasks.withType<Jar> {
                 archiveVersion.get()
             }
         attributes["Implementation-Version"] = flashbyteHumanVersion
+        attributes["Enable-Native-Access"] = "ALL-UNNAMED"
     }
 }

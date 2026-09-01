@@ -664,8 +664,9 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
    */
   public void handleBackendJoinGame(JoinGamePacket joinGame, VelocityServerConnection destination) {
     final MinecraftConnection serverMc = destination.ensureConnected();
+    final boolean firstJoin = !hasJoinedInitially;
 
-    if (!hasJoinedInitially) {
+    if (firstJoin) {
       hasJoinedInitially = true;
       spawned = true;
       player.setClientEntityId(joinGame.getEntityId());
@@ -718,8 +719,9 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     loginPluginMessagesBytes.set(0);
     loginPluginMessagesCount.set(0);
 
-    // Clear any title from the previous server.
-    if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_8)) {
+    // Clear any title from the previous server. On a seamless switch the leaving side owns the
+    // client state (see PreSeamlessSwitchEvent), so titles are left untouched there.
+    if (firstJoin && player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_8)) {
       player.getConnection().delayedWrite(
           GenericTitlePacket.constructTitlePacket(GenericTitlePacket.ActionType.RESET,
               player.getProtocolVersion()));

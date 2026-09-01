@@ -12,8 +12,7 @@ services:
       - |
         set -e
         [ -n "$$REPO_USER" ] && [ -n "$$REPO_PASS" ] || { echo "REPO_USER/REPO_PASS empty - set FLASHBYTE_REPO_USER and FLASHBYTE_REPO_PASS in .env"; exit 1; }
-        AUTH="Authorization: Basic $$(printf '%s:%s' "$$REPO_USER" "$$REPO_PASS" | base64 | tr -d '
-')"
+        AUTH="Authorization: Basic $$(printf '%s:%s' "$$REPO_USER" "$$REPO_PASS" | base64 | tr -d '\n')"
 
         pick() { grep -o "<$$1>[^<]*</$$1>" | head -1 | sed 's/<[^>]*>//g'; }
 

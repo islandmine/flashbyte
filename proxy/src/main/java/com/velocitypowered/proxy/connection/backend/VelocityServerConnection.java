@@ -36,7 +36,6 @@ import com.velocitypowered.proxy.connection.MinecraftConnection;
 import com.velocitypowered.proxy.connection.MinecraftConnectionAssociation;
 import com.velocitypowered.proxy.connection.MinecraftSessionHandler;
 import com.velocitypowered.proxy.connection.PlayerDataForwarding;
-import com.velocitypowered.proxy.connection.SeamlessBridge;
 import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
 import com.velocitypowered.proxy.connection.forge.modern.ModernForgeConnectionType;
 import com.velocitypowered.proxy.connection.util.ConnectionRequestResults.Impl;
@@ -54,9 +53,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.jetbrains.annotations.NotNull;
@@ -65,8 +61,6 @@ import org.jetbrains.annotations.NotNull;
  * Handles a connection from the proxy to some backend server.
  */
 public class VelocityServerConnection implements MinecraftConnectionAssociation, ServerConnection {
-
-  private static final Logger logger = LogManager.getLogger(VelocityServerConnection.class);
 
   private final VelocityRegisteredServer registeredServer;
   private final @Nullable VelocityRegisteredServer previousServer;
@@ -78,7 +72,6 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
   private BackendConnectionPhase connectionPhase = BackendConnectionPhases.UNKNOWN;
   private final Map<Long, Long> pendingPings = new HashMap<>();
   private @MonotonicNonNull Integer entityId;
-  private volatile @Nullable CompletableFuture<Void> switchPrepared;
   private volatile boolean muted;
 
   /**
@@ -154,7 +147,7 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
       proxyPlayer.getVirtualHost().orElseGet(() ->
         registeredServer.getServerInfo().getAddress()).getHostString(),
       getPlayerRemoteAddressAsString(),
-      proxyPlayer.getForwardedGameProfile(proxyPlayer.hasSpawned())
+      proxyPlayer.getGameProfile()
     );
   }
 
@@ -334,42 +327,11 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
   }
 
   /**
-   * Asks this backend to tear down the player's client-side world state (entities, chunks, effects,
-   * scoreboards) ahead of a seamless switch away from it.
-   *
-   * @return a future completing when the backend reports it is done, or after a short timeout
+   * Stops forwarding anything this backend still sends to the client. Used once the leaving side of
+   * a seamless switch has cleaned up the client, so late packets cannot leak into the new world.
    */
-  public CompletableFuture<Void> prepareSeamlessSwitch() {
-    MinecraftConnection mc = connection;
-    if (mc == null || mc.isClosed()) {
-      return CompletableFuture.completedFuture(null);
-    }
-    CompletableFuture<Void> prepared = new CompletableFuture<>();
-    this.switchPrepared = prepared;
-    final long startedAt = System.nanoTime();
-    mc.write(SeamlessBridge.message(SeamlessBridge.PREPARE, Map.of()));
-    return prepared.completeOnTimeout(null, 1, TimeUnit.SECONDS).thenRun(() -> {
-      long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
-      if (prepared.isDone() && muted) {
-        logger.info("{} tore down {}'s client state for a seamless switch in {} ms",
-            registeredServer.getServerInfo().getName(), proxyPlayer.getUsername(), elapsedMs);
-      } else {
-        logger.warn("{} did not confirm the seamless switch teardown for {} within {} ms",
-            registeredServer.getServerInfo().getName(), proxyPlayer.getUsername(), elapsedMs);
-      }
-    });
-  }
-
-  /**
-   * Called when the backend confirms the seamless-switch teardown; from now on nothing this backend
-   * sends is forwarded to the client anymore.
-   */
-  public void completeSeamlessSwitchPreparation() {
+  public void mute() {
     this.muted = true;
-    CompletableFuture<Void> prepared = this.switchPrepared;
-    if (prepared != null) {
-      prepared.complete(null);
-    }
   }
 
   public boolean isMuted() {

@@ -26,15 +26,14 @@ import com.velocitypowered.api.event.player.CookieReceiveEvent;
 import com.velocitypowered.api.event.player.PlayerChannelRegisterEvent;
 import com.velocitypowered.api.event.player.PlayerChannelUnregisterEvent;
 import com.velocitypowered.api.event.player.PlayerClientBrandEvent;
+import com.velocitypowered.api.event.player.PreSeamlessSwitchEvent;
 import com.velocitypowered.api.event.player.TabCompleteEvent;
 import com.velocitypowered.api.event.player.configuration.PlayerEnteredConfigurationEvent;
 import com.velocitypowered.api.network.ProtocolVersion;
 import com.velocitypowered.api.proxy.messages.ChannelIdentifier;
-import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import com.velocitypowered.proxy.VelocityServer;
 import com.velocitypowered.proxy.connection.MinecraftConnection;
 import com.velocitypowered.proxy.connection.MinecraftSessionHandler;
-import com.velocitypowered.proxy.connection.SeamlessBridge;
 import com.velocitypowered.proxy.connection.backend.BackendConnectionPhases;
 import com.velocitypowered.proxy.connection.backend.BungeeCordMessageResponder;
 import com.velocitypowered.proxy.connection.backend.VelocityServerConnection;
@@ -87,6 +86,7 @@ import java.util.Queue;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import net.kyori.adventure.key.Key;
@@ -114,6 +114,8 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       Integer.getInteger("velocity.max-queued-login-plugin-messages", 1024);
 
   private static final Logger logger = LogManager.getLogger(ClientPlaySessionHandler.class);
+
+  private static final long SEAMLESS_TEARDOWN_TIMEOUT_MS = 1000;
 
   private final ConnectedPlayer player;
   private boolean spawned = false;
@@ -599,10 +601,11 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     }
 
     final CompletableFuture<Void> prepared = spawned
-        ? existingConnection.prepareSeamlessSwitch()
+        ? awaitSeamlessTeardown(existingConnection)
         : CompletableFuture.completedFuture(null);
 
     return prepared.thenRunAsync(() -> {
+      existingConnection.mute();
       player.setConnectedServer(null);
       existingConnection.disconnect();
       player.sendKeepAlive();
@@ -615,6 +618,25 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
         serverBossBars.clear();
       }
     }, player.getConnection().eventLoop());
+  }
+
+  private CompletableFuture<Void> awaitSeamlessTeardown(VelocityServerConnection leaving) {
+    final VelocityServerConnection inFlight = player.getConnectionInFlight();
+    final long startedAt = System.nanoTime();
+    final CompletableFuture<PreSeamlessSwitchEvent> handlers = server.getEventManager().fire(
+        new PreSeamlessSwitchEvent(player, leaving.getServer(),
+            inFlight == null ? null : inFlight.getServer()));
+    return handlers.completeOnTimeout(null, SEAMLESS_TEARDOWN_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        .thenAccept(event -> {
+          long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+          if (event == null) {
+            logger.warn("Seamless switch of {} away from {}: teardown handlers did not finish "
+                + "within {} ms", player.getUsername(), leaving.getServerInfo().getName(), elapsedMs);
+          } else {
+            logger.info("Seamless switch of {} away from {}: teardown handlers finished in {} ms",
+                player.getUsername(), leaving.getServerInfo().getName(), elapsedMs);
+          }
+        });
   }
 
   /**
@@ -631,12 +653,6 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       hasJoinedInitially = true;
       spawned = true;
       player.setClientEntityId(joinGame.getEntityId());
-      if (joinGame.getEntityId() != player.getSeamlessEntityId()) {
-        logger.warn("{} joined {} with entity id {} instead of the proxy-assigned {} - that backend "
-                + "does not run the islandmine core, seamless switches away from it will fail",
-            player.getUsername(), destination.getServerInfo().getName(), joinGame.getEntityId(),
-            player.getSeamlessEntityId());
-      }
       player.getConnection().delayedWrite(joinGame);
       // Required for Legacy Forge
       player.getPhase().onFirstJoin(player);
@@ -668,12 +684,11 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
     // Tell the server about the proxy's plugin message channels.
     ProtocolVersion serverVersion = serverMc.getProtocolVersion();
-    final Collection<ChannelIdentifier> channels = new ArrayList<>(server.getChannelRegistrar()
-        .getChannelsForProtocol(serverMc.getProtocolVersion()));
-    if (channels.stream().noneMatch(channel -> SeamlessBridge.isBridgeChannel(channel.getId()))) {
-      channels.add(MinecraftChannelIdentifier.from(SeamlessBridge.CHANNEL));
+    final Collection<ChannelIdentifier> channels = server.getChannelRegistrar()
+        .getChannelsForProtocol(serverMc.getProtocolVersion());
+    if (!channels.isEmpty()) {
+      serverMc.delayedWrite(constructChannelsPacket(serverVersion, channels));
     }
-    serverMc.delayedWrite(constructChannelsPacket(serverVersion, channels));
     // Tell the server about this client's plugin message channels.
     if (!player.getClientsideChannels().isEmpty()) {
       serverMc.delayedWrite(constructChannelsPacket(serverVersion, player.getClientsideChannels()));

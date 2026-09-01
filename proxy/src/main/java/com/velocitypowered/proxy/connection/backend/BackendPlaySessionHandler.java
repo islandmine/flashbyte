@@ -39,7 +39,6 @@ import com.velocitypowered.proxy.VelocityServer;
 import com.velocitypowered.proxy.command.CommandGraphInjector;
 import com.velocitypowered.proxy.connection.MinecraftConnection;
 import com.velocitypowered.proxy.connection.MinecraftSessionHandler;
-import com.velocitypowered.proxy.connection.SeamlessBridge;
 import com.velocitypowered.proxy.connection.client.ClientPlaySessionHandler;
 import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
 import com.velocitypowered.proxy.connection.player.resourcepack.VelocityResourcePackInfo;
@@ -292,12 +291,6 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
   @Override
   public boolean handle(PluginMessagePacket packet) {
     if (bungeecordMessageResponder.process(packet)) {
-      return true;
-    }
-
-    if (SeamlessBridge.isBridgeChannel(packet.getChannel())
-        && SeamlessBridge.READY.equals(SeamlessBridge.key(packet.content()))) {
-      serverConn.completeSeamlessSwitchPreparation();
       return true;
     }
 

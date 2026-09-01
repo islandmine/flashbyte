@@ -70,12 +70,23 @@ services:
           echo "ERROR: could not resolve LuckPerms-Velocity and no existing jar - flashbyte core requires it"; exit 1
         fi
 
+        if [ -n "$$LUCKPERMS_DB_ADDRESS" ]; then
+          mkdir -p /server/plugins/luckperms
+          printf 'server: proxy\nstorage-method: mariadb\ndata:\n  address: %s\n  database: %s\n  username: %s\n  password: %s\n  table-prefix: luckperms_\nmessaging-service: sql\nauto-push-updates: true\nwatch-files: false\nsync-minutes: -1\n' \
+            "$$LUCKPERMS_DB_ADDRESS" "$$LUCKPERMS_DB_NAME" "$$LUCKPERMS_DB_USER" "$$LUCKPERMS_DB_PASSWORD" > /server/plugins/luckperms/config.yml
+          echo "LuckPerms storage -> $$LUCKPERMS_DB_ADDRESS/$$LUCKPERMS_DB_NAME"
+        fi
+
         echo "Starting proxy..."
         exec java $${JAVA_OPTS:-} -jar /server/flashbyte.jar
     environment:
       REPO_BASE: "http://repo.islandmine.net"
       REPO_USER: "${FLASHBYTE_REPO_USER}"
       REPO_PASS: "${FLASHBYTE_REPO_PASS}"
+      LUCKPERMS_DB_ADDRESS: "${LUCKPERMS_DB_ADDRESS}"
+      LUCKPERMS_DB_NAME: "${LUCKPERMS_DB_NAME:-luckperms}"
+      LUCKPERMS_DB_USER: "${LUCKPERMS_DB_USER:-luckperms}"
+      LUCKPERMS_DB_PASSWORD: "${LUCKPERMS_DB_PASSWORD}"
       JAVA_OPTS: "-Xms1G -Xmx1G"
     ports:
       - "25565:25577"

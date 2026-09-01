@@ -118,6 +118,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import net.kyori.adventure.audience.MessageType;
 import net.kyori.adventure.bossbar.BossBar;
 import net.kyori.adventure.identity.Identity;
@@ -152,6 +153,9 @@ import org.jetbrains.annotations.NotNull;
 public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, KeyIdentifiable,
     VelocityInboundConnection {
 
+  private static final int SEAMLESS_ENTITY_ID_BASE = 1_000_000_000;
+  private static final AtomicInteger SEAMLESS_ENTITY_IDS = new AtomicInteger();
+
   public static final int MAX_CLIENTSIDE_PLUGIN_CHANNELS = Integer.getInteger("velocity.max-clientside-plugin-channels", 1024);
   private static final PlainTextComponentSerializer PASS_THRU_TRANSLATE =
       PlainTextComponentSerializer.builder().flattener(TranslatableMapper.FLATTENER).build();
@@ -177,6 +181,8 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
   private final @Nullable String rawVirtualHost;
   private final HandshakeIntent handshakeIntent;
   private GameProfile profile;
+  private final int seamlessEntityId;
+  private int clientEntityId = -1;
   private PermissionFunction permissionFunction;
   private int tryIndex = 0;
   private long ping = -1;
@@ -223,6 +229,7 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
     this.connectionPhase = connection.getType().getInitialClientPhase();
     this.onlineMode = onlineMode;
     this.clientsideChannels = CappedSet.create(MAX_CLIENTSIDE_PLUGIN_CHANNELS);
+    this.seamlessEntityId = SEAMLESS_ENTITY_ID_BASE + SEAMLESS_ENTITY_IDS.getAndIncrement();
 
     if (connection.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_19_3)) {
       this.tabList = new VelocityTabList(this);
@@ -327,6 +334,52 @@ public class ConnectedPlayer implements MinecraftConnectionAssociation, Player, 
   @Override
   public GameProfile getGameProfile() {
     return profile;
+  }
+
+  /**
+   * The entity id every backend is asked to give this player. Backends running the islandmine core
+   * honour it, which keeps the client's own entity id stable across seamless server switches.
+   *
+   * @return the proxy-assigned entity id for this player
+   */
+  public int getSeamlessEntityId() {
+    return seamlessEntityId;
+  }
+
+  /**
+   * The entity id the client currently believes it has: the one from the first JoinGame it saw.
+   *
+   * @return the client's entity id, or -1 before the first JoinGame
+   */
+  public int getClientEntityId() {
+    return clientEntityId;
+  }
+
+  public void setClientEntityId(int clientEntityId) {
+    this.clientEntityId = clientEntityId;
+  }
+
+  /**
+   * The game profile handed to backends: the player's profile plus the seamless-switch hints
+   * ({@code islandmine_entity_id}, {@code islandmine_seamless}) the paper core plugin reads.
+   *
+   * @param seamless whether the client already has a world and this login is a seamless switch
+   * @return the profile to forward
+   */
+  public GameProfile getForwardedGameProfile(boolean seamless) {
+    return profile
+        .addProperty(new GameProfile.Property("islandmine_entity_id", Integer.toString(seamlessEntityId), ""))
+        .addProperty(new GameProfile.Property("islandmine_seamless", Boolean.toString(seamless), ""));
+  }
+
+  /**
+   * Whether the client is in play state with a world loaded, i.e. a new backend login is a switch.
+   *
+   * @return true if the client already received a JoinGame
+   */
+  public boolean hasSpawned() {
+    return connection.getActiveSessionHandler() instanceof ClientPlaySessionHandler handler
+        && handler.isSpawned();
   }
 
   public MinecraftConnection getConnection() {

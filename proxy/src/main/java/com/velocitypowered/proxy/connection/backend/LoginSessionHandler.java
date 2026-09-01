@@ -96,7 +96,7 @@ public class LoginSessionHandler implements MinecraftSessionHandler {
           configuration.getForwardingSecret(),
           serverConn.getPlayerRemoteAddressAsString(),
           player.getProtocolVersion(),
-          player.getGameProfile(),
+          player.getForwardedGameProfile(player.hasSpawned()),
           player.getIdentifiedKey(),
           requestedForwardingVersion);
 

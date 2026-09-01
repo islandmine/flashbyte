@@ -39,6 +39,7 @@ import com.velocitypowered.proxy.VelocityServer;
 import com.velocitypowered.proxy.command.CommandGraphInjector;
 import com.velocitypowered.proxy.connection.MinecraftConnection;
 import com.velocitypowered.proxy.connection.MinecraftSessionHandler;
+import com.velocitypowered.proxy.connection.SeamlessBridge;
 import com.velocitypowered.proxy.connection.client.ClientPlaySessionHandler;
 import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
 import com.velocitypowered.proxy.connection.player.resourcepack.VelocityResourcePackInfo;
@@ -294,6 +295,16 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
       return true;
     }
 
+    if (SeamlessBridge.isBridgeChannel(packet.getChannel())
+        && SeamlessBridge.READY.equals(SeamlessBridge.key(packet.content()))) {
+      serverConn.completeSeamlessSwitchPreparation();
+      return true;
+    }
+
+    if (serverConn.isMuted()) {
+      return true;
+    }
+
     // Register and unregister packets are simply forwarded to the server as-is.
     if (PluginMessageUtil.isRegister(packet) || PluginMessageUtil.isUnregister(packet)) {
       return false;
@@ -454,6 +465,9 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void handleGeneric(MinecraftPacket packet) {
+    if (serverConn.isMuted()) {
+      return;
+    }
     if (packet instanceof PluginMessagePacket pluginMessage) {
       pluginMessage.retain();
     }
@@ -467,6 +481,9 @@ public class BackendPlaySessionHandler implements MinecraftSessionHandler {
 
   @Override
   public void handleUnknown(ByteBuf buf) {
+    if (serverConn.isMuted()) {
+      return;
+    }
     boolean huge = buf.readableBytes() > LARGE_PACKET_THRESHOLD;
     playerConnection.delayedWrite(buf.retain());
     if (huge || ++packetsFlushed >= MAXIMUM_PACKETS_TO_FLUSH) {

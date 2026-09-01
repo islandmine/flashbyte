@@ -36,6 +36,7 @@ import com.velocitypowered.proxy.connection.MinecraftConnection;
 import com.velocitypowered.proxy.connection.MinecraftConnectionAssociation;
 import com.velocitypowered.proxy.connection.MinecraftSessionHandler;
 import com.velocitypowered.proxy.connection.PlayerDataForwarding;
+import com.velocitypowered.proxy.connection.SeamlessBridge;
 import com.velocitypowered.proxy.connection.client.ConnectedPlayer;
 import com.velocitypowered.proxy.connection.forge.modern.ModernForgeConnectionType;
 import com.velocitypowered.proxy.connection.util.ConnectionRequestResults.Impl;
@@ -53,6 +54,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.jetbrains.annotations.NotNull;
@@ -72,6 +74,8 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
   private BackendConnectionPhase connectionPhase = BackendConnectionPhases.UNKNOWN;
   private final Map<Long, Long> pendingPings = new HashMap<>();
   private @MonotonicNonNull Integer entityId;
+  private volatile @Nullable CompletableFuture<Void> switchPrepared;
+  private volatile boolean muted;
 
   /**
    * Initializes a new server connection.
@@ -146,7 +150,7 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
       proxyPlayer.getVirtualHost().orElseGet(() ->
         registeredServer.getServerInfo().getAddress()).getHostString(),
       getPlayerRemoteAddressAsString(),
-      proxyPlayer.getGameProfile()
+      proxyPlayer.getForwardedGameProfile(proxyPlayer.hasSpawned())
     );
   }
 
@@ -323,6 +327,39 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
 
   public Map<Long, Long> getPendingPings() {
     return pendingPings;
+  }
+
+  /**
+   * Asks this backend to tear down the player's client-side world state (entities, chunks, effects,
+   * scoreboards) ahead of a seamless switch away from it.
+   *
+   * @return a future completing when the backend reports it is done, or after a short timeout
+   */
+  public CompletableFuture<Void> prepareSeamlessSwitch() {
+    MinecraftConnection mc = connection;
+    if (mc == null || mc.isClosed()) {
+      return CompletableFuture.completedFuture(null);
+    }
+    CompletableFuture<Void> prepared = new CompletableFuture<>();
+    this.switchPrepared = prepared;
+    mc.write(SeamlessBridge.message(SeamlessBridge.PREPARE, Map.of()));
+    return prepared.completeOnTimeout(null, 1, TimeUnit.SECONDS);
+  }
+
+  /**
+   * Called when the backend confirms the seamless-switch teardown; from now on nothing this backend
+   * sends is forwarded to the client anymore.
+   */
+  public void completeSeamlessSwitchPreparation() {
+    this.muted = true;
+    CompletableFuture<Void> prepared = this.switchPrepared;
+    if (prepared != null) {
+      prepared.complete(null);
+    }
+  }
+
+  public boolean isMuted() {
+    return muted;
   }
 
   public Integer getEntityId() {

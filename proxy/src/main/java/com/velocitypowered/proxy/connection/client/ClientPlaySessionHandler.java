@@ -31,7 +31,6 @@ import com.velocitypowered.api.event.player.configuration.PlayerEnteredConfigura
 import com.velocitypowered.api.network.ProtocolVersion;
 import com.velocitypowered.api.proxy.messages.ChannelIdentifier;
 import com.velocitypowered.proxy.VelocityServer;
-import com.velocitypowered.proxy.connection.ConnectionTypes;
 import com.velocitypowered.proxy.connection.MinecraftConnection;
 import com.velocitypowered.proxy.connection.MinecraftSessionHandler;
 import com.velocitypowered.proxy.connection.backend.BackendConnectionPhases;
@@ -49,7 +48,6 @@ import com.velocitypowered.proxy.protocol.packet.JoinGamePacket;
 import com.velocitypowered.proxy.protocol.packet.KeepAlivePacket;
 import com.velocitypowered.proxy.protocol.packet.PluginMessagePacket;
 import com.velocitypowered.proxy.protocol.packet.ResourcePackResponsePacket;
-import com.velocitypowered.proxy.protocol.packet.RespawnPacket;
 import com.velocitypowered.proxy.protocol.packet.ServerboundCookieResponsePacket;
 import com.velocitypowered.proxy.protocol.packet.TabCompleteRequestPacket;
 import com.velocitypowered.proxy.protocol.packet.TabCompleteResponsePacket;
@@ -114,13 +112,6 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       Integer.getInteger("velocity.max-queued-login-plugin-messages", 1024);
 
   private static final Logger logger = LogManager.getLogger(ClientPlaySessionHandler.class);
-
-  // When true, a 1.20.2+ switch to a backend whose registries differ from what the client holds is
-  // routed through a brief config-state reconfigure instead of a seamless play-state switch, to
-  // avoid registry/entity desync. Off by default: every switch stays fully seamless (the world
-  // reloads in place with no screen), which assumes all backends share the same registries.
-  private static final boolean RECONFIGURE_ON_REGISTRY_MISMATCH =
-      Boolean.getBoolean("flashbyte.reconfigure-on-registry-mismatch");
 
   private final ConnectedPlayer player;
   private boolean spawned = false;
@@ -601,8 +592,15 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
    */
   public CompletableFuture<Void> doSwitch() {
     final VelocityServerConnection existingConnection = player.getConnectedServer();
+    if (existingConnection == null) {
+      return CompletableFuture.completedFuture(null);
+    }
 
-    if (existingConnection != null) {
+    final CompletableFuture<Void> prepared = spawned
+        ? existingConnection.prepareSeamlessSwitch()
+        : CompletableFuture.completedFuture(null);
+
+    return prepared.thenRunAsync(() -> {
       player.setConnectedServer(null);
       existingConnection.disconnect();
       player.sendKeepAlive();
@@ -614,56 +612,7 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
       } else {
         serverBossBars.clear();
       }
-    }
-
-    // By default every switch is fully seamless: the client never leaves play state, so the world
-    // just reloads around the player like a dimension change — no reconfigure or loading screen.
-    //
-    // The catch (1.20.2+): world registries (dimension types, biomes, damage types, entity
-    // variants, ...) are session state delivered ONLY during the configuration state; there is no
-    // play-state packet that can resend them. A seamless JoinGame + Respawn therefore reuses the
-    // registries the client already holds, which is correct only when every backend shares the same
-    // registries (same version + datapacks). If a backend's registries genuinely differ, a
-    // screenless switch desyncs dimension indices / entity variants. Operators whose backends can
-    // differ can opt into a brief config-state reconfigure for mismatched switches by setting
-    // -Dflashbyte.reconfigure-on-registry-mismatch=true.
-    if (needsReconfigureForSwitch()) {
-      // Configuration clears the client's world, so the subsequent JoinGame is sent as-is.
-      spawned = false;
-      player.switchToConfigState();
-      return configSwitchFuture;
-    }
-
-    // Stay in play state for seamless server switching.
-    // The backend goes through its config state independently.
-    // The client never leaves play state, so there's no config/loading screen.
-    return CompletableFuture.completedFuture(null);
-  }
-
-  /**
-   * Determines whether the upcoming switch must route the client through the configuration state to
-   * resync registries. Disabled by default (every switch stays fully seamless); enabled only when
-   * {@code -Dflashbyte.reconfigure-on-registry-mismatch=true} is set, for setups whose backends can
-   * have different registries and would otherwise desync on a screenless switch.
-   */
-  private boolean needsReconfigureForSwitch() {
-    if (!RECONFIGURE_ON_REGISTRY_MISMATCH) {
-      // Always seamless — the world reloads in place with no reconfigure screen.
-      return false;
-    }
-    if (player.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_20_2)) {
-      // No configuration state; registries travel inside JoinGame. The fast switch is correct.
-      return false;
-    }
-    final VelocityServerConnection inFlight = player.getConnectionInFlight();
-    if (inFlight == null) {
-      return true;
-    }
-    final Long destinationFingerprint = inFlight.getServer().getRegistryFingerprint();
-    final Long clientFingerprint = player.getCurrentRegistryFingerprint();
-    // Seamless only when the destination's registries are known and match the client's current
-    // ones; an unknown destination (never connected to before) is reconfigured to be safe.
-    return destinationFingerprint == null || !destinationFingerprint.equals(clientFingerprint);
+    }, player.getConnection().eventLoop());
   }
 
   /**
@@ -675,37 +624,29 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
    */
   public void handleBackendJoinGame(JoinGamePacket joinGame, VelocityServerConnection destination) {
     final MinecraftConnection serverMc = destination.ensureConnected();
-    boolean seamlessSwitch = false;
 
     if (!hasJoinedInitially) {
-      // True first join — send JoinGame as-is.
       hasJoinedInitially = true;
       spawned = true;
+      player.setClientEntityId(joinGame.getEntityId());
+      if (joinGame.getEntityId() != player.getSeamlessEntityId()) {
+        logger.warn("{} joined {} with entity id {} instead of the proxy-assigned {} - that backend "
+                + "does not run the islandmine core, seamless switches away from it will fail",
+            player.getUsername(), destination.getServerInfo().getName(), joinGame.getEntityId(),
+            player.getSeamlessEntityId());
+      }
       player.getConnection().delayedWrite(joinGame);
       // Required for Legacy Forge
       player.getPhase().onFirstJoin(player);
-    } else if (!spawned) {
-      // The client was routed through the configuration state for this switch (its world was
-      // cleared and it received the destination's registries), so just send the JoinGame as-is —
-      // no Respawn dance is needed, exactly like upstream Velocity's 1.20.2+ switch.
-      spawned = true;
-      player.getTabList().clearAll();
-      player.getConnection().delayedWrite(joinGame);
     } else {
-      // Seamless switch: the client stayed in play state with the previous world still loaded, so
-      // we tear it down with a JoinGame + Respawn "fast switch". By having the client accept the
-      // backend's JoinGame it adopts the backend's entity id (no entity-id rewriting needed), and
-      // we only take this path when the destination's registries match the client's current ones
-      // (see doSwitch), so there is no registry/entity desync — the same approach Velocity's
-      // pre-1.20.2 switch uses.
-      player.getTabList().clearAll();
-      seamlessSwitch = true;
-
-      if (player.getConnection().getType() == ConnectionTypes.LEGACY_FORGE) {
-        this.doSafeClientServerSwitch(joinGame);
-      } else {
-        this.doFastClientServerSwitch(joinGame);
+      if (joinGame.getEntityId() != player.getClientEntityId()) {
+        throw new IllegalStateException("seamless switch to " + destination.getServerInfo().getName()
+            + " impossible: backend assigned entity id " + joinGame.getEntityId()
+            + " but the client is entity " + player.getClientEntityId());
       }
+      player.getTabList().clearAll();
+      player.getConnection().delayedWrite(
+          new GameEventPacket(GameEventPacket.CHANGE_GAME_MODE, joinGame.getGamemode()));
     }
 
     destination.setEntityId(joinGame.getEntityId()); // used for sound api
@@ -743,10 +684,8 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     loginPluginMessagesBytes.set(0);
     loginPluginMessagesCount.set(0);
 
-    // Clear any title from the previous server. Skipped on a seamless switch so the paper-side
-    // transition overlay (core's fullscreen loading glyph) survives the in-place reload and
-    // keeps covering the chunk swap.
-    if (!seamlessSwitch && player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_8)) {
+    // Clear any title from the previous server.
+    if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_8)) {
       player.getConnection().delayedWrite(
           GenericTitlePacket.constructTitlePacket(GenericTitlePacket.ActionType.RESET,
               player.getProtocolVersion()));
@@ -758,43 +697,13 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
     destination.completeJoin();
   }
 
-  private void doFastClientServerSwitch(JoinGamePacket joinGame) {
-    // Send the backend's JoinGame followed by a Respawn in the correct dimension. The client
-    // adopts the backend's entity id from the JoinGame (so no entity-id rewriting is needed), and
-    // since we stay in play state there is no config-state screen — the world reloads in place.
-    //
-    // Measured on 26.1.2 (DebugClient switch captures): the LevelLoadingScreen opens with the
-    // respawn, REQUIRES game event 13 to advance (withholding it leaves the client stuck), and
-    // has NO spectator exemption - a spectator-masked client kept the screen up for the full
-    // chunk wait while the mask desynced abilities. So the switch sends the packets straight and
-    // event 13 immediately; the screen's visual is neutralized client-side instead (the
-    // texturepack no-ops the menu-blur post effect, so the screen draws nothing over the frame
-    // and the proxy plugin's transition overlay stays visible throughout).
-    final RespawnPacket respawn = RespawnPacket.fromJoinGame(joinGame);
-
-    if (player.getProtocolVersion().lessThan(ProtocolVersion.MINECRAFT_1_16)) {
-      joinGame.setDimension(joinGame.getDimension() == 0 ? -1 : 0);
-    }
-
-    player.getConnection().delayedWrite(joinGame);
-    player.getConnection().delayedWrite(respawn);
-
-    if (player.getProtocolVersion().noLessThan(ProtocolVersion.MINECRAFT_1_20_3)) {
-      player.getConnection().delayedWrite(
-          new GameEventPacket(GameEventPacket.START_WAITING_FOR_LEVEL_CHUNKS, 0f));
-    }
-  }
-
-  private void doSafeClientServerSwitch(JoinGamePacket joinGame) {
-    // Safe switch for Legacy Forge clients.
-    player.getConnection().delayedWrite(joinGame);
-
-    final RespawnPacket fakeSwitchPacket = RespawnPacket.fromJoinGame(joinGame);
-    fakeSwitchPacket.setDimension(joinGame.getDimension() == 0 ? -1 : 0);
-    player.getConnection().delayedWrite(fakeSwitchPacket);
-
-    final RespawnPacket correctSwitchPacket = RespawnPacket.fromJoinGame(joinGame);
-    player.getConnection().delayedWrite(correctSwitchPacket);
+  /**
+   * Whether the client has received its first JoinGame and therefore has a world loaded.
+   *
+   * @return true once the client is in-world
+   */
+  public boolean isSpawned() {
+    return spawned;
   }
 
   public List<UUID> getServerBossBars() {

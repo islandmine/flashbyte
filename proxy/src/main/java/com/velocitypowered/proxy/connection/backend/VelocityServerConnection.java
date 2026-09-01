@@ -55,6 +55,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.checkerframework.checker.nullness.qual.Nullable;
 import org.jetbrains.annotations.NotNull;
@@ -63,6 +65,8 @@ import org.jetbrains.annotations.NotNull;
  * Handles a connection from the proxy to some backend server.
  */
 public class VelocityServerConnection implements MinecraftConnectionAssociation, ServerConnection {
+
+  private static final Logger logger = LogManager.getLogger(VelocityServerConnection.class);
 
   private final VelocityRegisteredServer registeredServer;
   private final @Nullable VelocityRegisteredServer previousServer;
@@ -342,8 +346,18 @@ public class VelocityServerConnection implements MinecraftConnectionAssociation,
     }
     CompletableFuture<Void> prepared = new CompletableFuture<>();
     this.switchPrepared = prepared;
+    final long startedAt = System.nanoTime();
     mc.write(SeamlessBridge.message(SeamlessBridge.PREPARE, Map.of()));
-    return prepared.completeOnTimeout(null, 1, TimeUnit.SECONDS);
+    return prepared.completeOnTimeout(null, 1, TimeUnit.SECONDS).thenRun(() -> {
+      long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
+      if (prepared.isDone() && muted) {
+        logger.info("{} tore down {}'s client state for a seamless switch in {} ms",
+            registeredServer.getServerInfo().getName(), proxyPlayer.getUsername(), elapsedMs);
+      } else {
+        logger.warn("{} did not confirm the seamless switch teardown for {} within {} ms",
+            registeredServer.getServerInfo().getName(), proxyPlayer.getUsername(), elapsedMs);
+      }
+    });
   }
 
   /**

@@ -30,9 +30,11 @@ import com.velocitypowered.api.event.player.TabCompleteEvent;
 import com.velocitypowered.api.event.player.configuration.PlayerEnteredConfigurationEvent;
 import com.velocitypowered.api.network.ProtocolVersion;
 import com.velocitypowered.api.proxy.messages.ChannelIdentifier;
+import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import com.velocitypowered.proxy.VelocityServer;
 import com.velocitypowered.proxy.connection.MinecraftConnection;
 import com.velocitypowered.proxy.connection.MinecraftSessionHandler;
+import com.velocitypowered.proxy.connection.SeamlessBridge;
 import com.velocitypowered.proxy.connection.backend.BackendConnectionPhases;
 import com.velocitypowered.proxy.connection.backend.BungeeCordMessageResponder;
 import com.velocitypowered.proxy.connection.backend.VelocityServerConnection;
@@ -666,11 +668,12 @@ public class ClientPlaySessionHandler implements MinecraftSessionHandler {
 
     // Tell the server about the proxy's plugin message channels.
     ProtocolVersion serverVersion = serverMc.getProtocolVersion();
-    final Collection<ChannelIdentifier> channels = server.getChannelRegistrar()
-        .getChannelsForProtocol(serverMc.getProtocolVersion());
-    if (!channels.isEmpty()) {
-      serverMc.delayedWrite(constructChannelsPacket(serverVersion, channels));
+    final Collection<ChannelIdentifier> channels = new ArrayList<>(server.getChannelRegistrar()
+        .getChannelsForProtocol(serverMc.getProtocolVersion()));
+    if (channels.stream().noneMatch(channel -> SeamlessBridge.isBridgeChannel(channel.getId()))) {
+      channels.add(MinecraftChannelIdentifier.from(SeamlessBridge.CHANNEL));
     }
+    serverMc.delayedWrite(constructChannelsPacket(serverVersion, channels));
     // Tell the server about this client's plugin message channels.
     if (!player.getClientsideChannels().isEmpty()) {
       serverMc.delayedWrite(constructChannelsPacket(serverVersion, player.getClientsideChannels()));
